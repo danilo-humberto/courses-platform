@@ -107,7 +107,7 @@ As capturas e rastros de falhas ficam em `test-results/`, ignorado pelo Git. O b
 
 ## Build e hospedagem
 
-`npm run build` produz `dist/web` e `dist/api`. `npm start` inicia somente o Express, em loopback. A hospedagem precisa servir o frontend com fallback para `index.html`, encaminhar `/api` ao Express e configurar TLS, origem e URLs do Auth. O worker de PDF é um arquivo estático do build. Nenhuma infraestrutura ou deploy foi criado.
+`npm run build` produz `dist/web` e `dist/api`. `npm start` inicia somente o Express, em loopback por padrão (`HOST=127.0.0.1`). No Render, configure `HOST=0.0.0.0` e utilize a variável `PORT` fornecida pela plataforma. O endpoint de health é `GET /api/health`. A hospedagem precisa servir o frontend com fallback para `index.html`, encaminhar `/api` ao Express e configurar TLS, origem e URLs do Auth. O worker de PDF é um arquivo estático do build. Nenhuma infraestrutura ou deploy foi criado.
 
 O MVP mantém consultas administrativas em memória; é adequado a equipes pequenas. O backend pagina as listas de usuários, cursos e atribuições para não truncar silenciosamente no limite padrão do Supabase. Em escala maior, relatórios devem migrar para agregações e exportação por lotes. PDFs substituídos de rascunhos não são apagados automaticamente: a limpeza de arquivos órfãos exige manutenção controlada, sem tocar em arquivos referenciados por versões publicadas.
 

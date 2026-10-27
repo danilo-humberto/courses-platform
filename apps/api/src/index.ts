@@ -6,6 +6,7 @@ const parsed = z
     SUPABASE_PUBLISHABLE_KEY: z.string().min(10),
     SUPABASE_SECRET_KEY: z.string().min(10),
     WEB_ORIGIN: z.url(),
+    HOST: z.string().min(1).default("127.0.0.1"),
     PORT: z.coerce.number().int().min(1).max(65535).default(3001),
   })
   .safeParse(process.env);
@@ -22,6 +23,6 @@ createApp({
   publishableKey: env.SUPABASE_PUBLISHABLE_KEY,
   secretKey: env.SUPABASE_SECRET_KEY,
   origin: env.WEB_ORIGIN,
-}).listen(env.PORT, "127.0.0.1", () =>
-  console.log(`API CIFRA em http://localhost:${env.PORT}`),
+}).listen(env.PORT, env.HOST, () =>
+  console.log(`API CIFRA em http://${env.HOST}:${env.PORT}`),
 );
