@@ -19,6 +19,7 @@ import {
   X,
   GraduationCap,
   CircleHelp,
+  BriefcaseBusiness,
 } from "lucide-react";
 import { api, supabase } from "./lib";
 import { Auth } from "./Auth";
@@ -27,6 +28,7 @@ import { Button } from "./components/ui/button";
 import type { Profile } from "./types";
 import { Dashboard, MyCourses, Reports } from "./Overview";
 import { Courses, UsersPage } from "./Administration";
+import { JobPositions } from "./JobPositions";
 const LazyTraining = lazy(() =>
   import("./Training").then((module) => ({ default: module.Training })),
 );
@@ -110,7 +112,8 @@ export function App() {
     ? [
         { to: "/", icon: LayoutDashboard, label: "Visão geral" },
         { to: "/cursos", icon: BookOpen, label: "Cursos" },
-        { to: "/gerentes", icon: Users, label: "Gerentes" },
+        { to: "/usuarios", icon: Users, label: "Usuários" },
+        { to: "/cargos", icon: BriefcaseBusiness, label: "Cargos" },
         { to: "/relatorios", icon: ChartColumn, label: "Relatórios" },
       ]
     : [
@@ -135,10 +138,6 @@ export function App() {
         >
           <X />
         </button>
-        <div className="workspace-tag">
-          <span className="workspace-dot" />
-          {admin ? "Espaço do administrador" : "Espaço do gerente"}
-        </div>
         <span className="nav-caption">PRINCIPAL</span>
         <nav>
           {nav.map((item) => (
@@ -174,7 +173,7 @@ export function App() {
               <Menu />
             </button>
             <span className="breadcrumb">
-              CIFRA <span>/</span> Desenvolvimento
+              Cifra Academy <span>/</span> Desenvolvimento
             </span>
           </div>
           <div className="profile">
@@ -183,7 +182,13 @@ export function App() {
             </span>
             <div>
               <strong>{profile.name || "Colaborador"}</strong>
-              <small>{admin ? "Administrador" : "Gerente"}</small>
+              <small>
+                {profile.is_supreme
+                  ? "Conta suprema"
+                  : admin
+                    ? "Administrador"
+                    : "Usuário"}
+              </small>
             </div>
             <Button
               variant="ghost"
@@ -211,7 +216,15 @@ export function App() {
             {admin ? (
               <>
                 <Route path="/cursos" element={<Courses />} />
-                <Route path="/gerentes" element={<UsersPage />} />
+                <Route
+                  path="/usuarios"
+                  element={<UsersPage supreme={Boolean(profile.is_supreme)} />}
+                />
+                <Route path="/cargos" element={<JobPositions />} />
+                <Route
+                  path="/gerentes"
+                  element={<Navigate to="/usuarios" replace />}
+                />
                 <Route path="/relatorios" element={<Reports />} />
               </>
             ) : (
@@ -229,7 +242,8 @@ export function App() {
         </main>
         <footer className="page-footer">
           <span>
-            © {new Date().getFullYear()} CIFRA · Desenvolvimento contínuo
+            © {new Date().getFullYear()} Cifra Academy · Desenvolvimento
+            contínuo
           </span>
           <span>
             <CircleHelp size={14} /> Precisa de ajuda? Procure seu

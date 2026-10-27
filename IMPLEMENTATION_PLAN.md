@@ -1,4 +1,4 @@
-# CIFRA — Plano de implementação do MVP
+# Cifra Academy — Plano de implementação do MVP
 
 Status: implementação local autorizada pelo usuário e executada. Integração remota e publicação continuam pendentes de ambiente e autorização específica. Consulte README.md e docs/VALIDATION.md para execução e validação.
 
@@ -16,7 +16,7 @@ O frontend usa o Supabase Auth para login e recuperação de senha. Envia o toke
 ## Decisões de implementação
 
 1. Cursos publicados têm versões imutáveis contendo PDF, quantidade de páginas, questões, alternativas, nota mínima e limite de tentativas. Alterações produzem um novo rascunho e uma nova versão ao publicar.
-2. Cada atribuição vincula um gerente a uma versão específica. Publicar uma versão nova não reinicia atribuições nem invalida conclusões anteriores. Treinamento na nova versão exige nova atribuição explícita.
+2. Cada atribuição vincula um usuário a uma versão específica. Publicar uma versão nova não reinicia atribuições nem invalida conclusões anteriores. Treinamento na nova versão exige nova atribuição explícita.
 3. A desativação bloqueia chamadas protegidas, inclusive para sessões já abertas. Recuperação de senha utiliza mensagens genéricas e o fluxo do Supabase Auth.
 4. PDFs ficam em bucket privado. O acesso depende da atribuição ou do perfil administrador; links assinados têm duração curta. Arquivar um curso impede novas atribuições, preservando histórico e acesso às atribuições existentes.
 5. Uma página conta como visualizada após ser renderizada. Isso registra navegação, sem alegar comprovação de leitura ou atenção.
@@ -32,8 +32,8 @@ O frontend usa o Supabase Auth para login e recuperação de senha. Envia o toke
 - `profiles`: identidade vinculada ao Auth, nome, papel e estado ativo.
 - `courses`: identidade do curso e estado de publicação/arquivamento.
 - `course_versions`: conteúdo e critérios de cada versão.
-- `questions`: perguntas com alternativas em JSON por versão; `private.quiz_keys`: gabarito inacessível aos gerentes. Alternativas são uma lista pequena (2 a 6) e não precisam de entidade independente no MVP.
-- `assignments`: gerente, versão atribuída, início e último slide.
+- `questions`: perguntas com alternativas em JSON por versão; `private.quiz_keys`: gabarito inacessível aos usuários. Alternativas são uma lista pequena (2 a 6) e não precisam de entidade independente no MVP.
+- `assignments`: usuário, versão atribuída, início e último slide.
 - `slide_views`: páginas distintas vistas por atribuição.
 - `quiz_attempts` e `quiz_answers`: tentativas, respostas e notas calculadas.
 - `completions`: registro imutável por atribuição com data e versão.
@@ -44,20 +44,20 @@ Migrações serão preparadas como arquivos revisáveis. Aplicação em banco de
 ## Etapas e critérios de aceite
 
 1. Estrutura local, configuração de exemplo e scripts de desenvolvimento, lint, tipagem e testes.
-2. Migrações e políticas: isolamento por gerente, administração restrita, proteção de histórico e armazenamento privado.
-3. Login, recuperação de senha e gestão de gerentes ativos/inativos.
+2. Migrações e políticas: isolamento por usuário, administração restrita, proteção de histórico e armazenamento privado.
+3. Login, recuperação de senha e gestão de usuários ativos/inativos.
 4. Cadastro, edição de rascunhos, publicação, arquivamento, upload de PDF, questionários e atribuições.
-5. Área do gerente: cursos atribuídos, visualizador, retomada, progresso salvo e histórico.
+5. Área do usuário: cursos atribuídos, visualizador, retomada, progresso salvo e histórico.
 6. Conclusão sem questionário mediante confirmação; conclusão com questionário mediante nota mínima, respeitando tentativas.
-7. Painel com os três estados, filtros por gerente/curso/situação e exportação CSV.
+7. Painel com os três estados, filtros por usuário/curso/situação e exportação CSV.
 8. Verificação dos critérios do levantamento, documentação de execução e relatório com resultados reais e pendências.
 
 ## Verificação proporcional ao risco
 
 - TDD nas regras de progresso, nota, limite de tentativas, conclusão e preservação de versões.
-- Testes de integração da API para autenticação, usuário inativo, restrição de administrador, acesso entre gerentes e validação de entradas.
+- Testes de integração da API para autenticação, usuário inativo, restrição de administrador, acesso entre usuários e validação de entradas.
 - Testes no banco descartável para RLS, imutabilidade, transações e requisições concorrentes. Mocks não comprovam segurança das políticas reais.
-- Fluxos de navegador: administrador publica e atribui; gerente retoma, conclui ou reprova; relatório e histórico refletem os resultados.
+- Fluxos de navegador: administrador publica e atribui; usuário retoma, conclui ou reprova; relatório e histórico refletem os resultados.
 - Lint, análise de tipos e build de ambos os aplicativos.
 - Dados sintéticos; nenhum teste contra produção. Verificações sem ambiente disponível serão marcadas como pendentes.
 

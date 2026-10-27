@@ -29,7 +29,9 @@ try {
   const port = docker("port", name, "5432/tcp").trim().split(":").at(-1);
   for (let i = 0; i < 60; i++) {
     try {
-      docker("exec", name, "pg_isready", "-U", "postgres");
+      // The initialization server accepts Unix sockets before PostgreSQL restarts.
+      // Wait for TCP, which is enabled only by the final server.
+      docker("exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres");
       break;
     } catch {
       await new Promise((r) => setTimeout(r, 500));
@@ -50,6 +52,22 @@ try {
     await client.query(readFileSync(`supabase/migrations/${file}`, "utf8"));
   }
   await client.query(readFileSync("supabase/tests/invariants.sql", "utf8"));
+  await client.query(
+    readFileSync("supabase/tests/employee_import.sql", "utf8"),
+  );
+  console.log(
+    "PASS: pending employees, optional contact email, duplicates, CPF identity linkage and authorization",
+  );
+  await client.query(
+    readFileSync("supabase/tests/supreme_account.sql", "utf8"),
+  );
+  console.log(
+    "PASS: supreme uniqueness, promotion, RLS, audit and authorization",
+  );
+  await client.query(readFileSync("supabase/tests/job_positions.sql", "utf8"));
+  console.log(
+    "PASS: job CRUD, batch atomicity, replacement, deletion, RLS and permissions",
+  );
   await client.query(readFileSync("supabase/tests/clear_reports.sql", "utf8"));
   console.log(
     "PASS: global report cleanup, confirmation, authorization, rollback and catalog preservation",

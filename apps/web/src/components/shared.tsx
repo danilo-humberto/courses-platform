@@ -11,7 +11,7 @@ export function Logo() {
         width={44}
         height={52}
       />
-      <span>CIFRA</span>
+      <span>Cifra Academy</span>
     </div>
   );
 }

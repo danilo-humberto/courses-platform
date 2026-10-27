@@ -3,10 +3,19 @@ export type Profile = {
   name: string;
   email: string;
   role: "admin" | "manager";
+  is_supreme?: boolean;
   active: boolean;
   deleted_at?: string | null;
   auth_user_id?: string | null;
+  job_id?: string | null;
+  job?: { id: string; name: string } | null;
+  cpf?: string | null;
+  state?: string;
+  cost_center?: string;
+  professional_function?: string;
+  credential_pending?: boolean;
 };
+export type JobPosition = { id: string; name: string; description: string };
 export type Question = {
   id?: string;
   prompt: string;

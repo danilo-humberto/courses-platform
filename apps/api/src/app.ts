@@ -9,7 +9,8 @@ import { rateLimit } from "express-rate-limit";
 import multer from "multer";
 import { PDFDocument } from "pdf-lib";
 import { z, ZodError } from "zod";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
+import { cleanEmployees, employeeSchema } from "./employees.js";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { csvCell, draftSchema, trainingStatus } from "./domain.js";
 
@@ -24,7 +25,9 @@ export type Profile = {
   name: string;
   email: string;
   role: "admin" | "manager";
+  is_supreme?: boolean;
   active: boolean;
+  job_id?: string | null;
 };
 type Context = { db: SupabaseClient; profile: Profile };
 class HttpError extends Error {
@@ -37,6 +40,13 @@ class HttpError extends Error {
 }
 const uuid = z.string().uuid();
 const id = (req: Request) => uuid.parse(req.params.id);
+// Preserve deployed database contracts while presenting the current terminology.
+const legacyUserMessages = new Map([
+  ["Gerente não encontrado", "Usuário não encontrado"],
+  ["Gerente não encontrado ou excluído", "Usuário não encontrado ou excluído"],
+  ["Gerente inativo ou inválido", "Usuário inativo ou inválido"],
+  ["Selecione de 1 a 200 gerentes", "Selecione de 1 a 200 usuários"],
+]);
 const checked = <T>(result: {
   data: T;
   error: { message: string; code?: string } | null;
@@ -48,7 +58,8 @@ const checked = <T>(result: {
       denied
         ? "Acesso negado."
         : result.error.code === "P0001"
-          ? result.error.message
+          ? (legacyUserMessages.get(result.error.message) ??
+            result.error.message)
           : "Não foi possível concluir a operação. Confira os dados.",
     );
   }
@@ -228,31 +239,184 @@ export function createApp(
     );
   });
   app.use("/api/admin", admin);
-  app.get("/api/admin/users", async (_req, res) =>
+  const jobSchema = z.object({
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(2000).default(""),
+  });
+  app.get("/api/admin/jobs", async (_req, res) => {
     res.json(
       await collectPages((offset) =>
         context(res)
-          .db.from("profiles")
+          .db.from("job_positions")
           .select("*")
           .order("name")
           .order("id")
           .range(offset, offset + 499),
       ),
-    ),
-  );
-  app.post("/api/admin/users", async (req, res) => {
+    );
+  });
+  app.post("/api/admin/jobs", async (req, res) => {
+    const body = jobSchema.parse(req.body);
+    const jobId = checked(
+      await context(res).db.rpc("admin_save_job", {
+        p_id: null,
+        p_name: body.name,
+        p_description: body.description,
+      }),
+    );
+    res.status(201).json({ id: jobId });
+  });
+  app.patch("/api/admin/jobs/:id", async (req, res) => {
+    const body = jobSchema.parse(req.body);
+    checked(
+      await context(res).db.rpc("admin_save_job", {
+        p_id: id(req),
+        p_name: body.name,
+        p_description: body.description,
+      }),
+    );
+    res.sendStatus(204);
+  });
+  app.delete("/api/admin/jobs/:id", async (req, res) => {
+    checked(await context(res).db.rpc("admin_delete_job", { p_id: id(req) }));
+    res.sendStatus(204);
+  });
+  app.post("/api/admin/jobs/:id/assign", async (req, res) => {
     const body = z
       .object({
-        name: z.string().trim().min(1).max(120),
-        email: z.email(),
-        password: z.string().min(12).max(128),
+        users: z
+          .array(uuid)
+          .min(1)
+          .max(200)
+          .refine((users) => new Set(users).size === users.length),
       })
       .parse(req.body);
-    const { data, error } = await service.auth.admin.createUser({
-      email: body.email,
-      password: body.password,
-      email_confirm: true,
-    });
+    checked(
+      await context(res).db.rpc("admin_assign_job", {
+        p_job: id(req),
+        p_users: body.users,
+      }),
+    );
+    res.sendStatus(204);
+  });
+  app.get("/api/admin/users", async (_req, res) => {
+    const profiles = await collectPages<Profile>((offset) =>
+      context(res)
+        .db.from("profiles")
+        .select("*")
+        .order("name")
+        .order("id")
+        .range(offset, offset + 499),
+    );
+    const users = context(res).profile.is_supreme
+      ? profiles
+      : profiles.filter((user) => user.role === "manager");
+    // Existing user management remains available before the jobs migration is applied.
+    if (!users.some((user) => user.job_id)) {
+      res.json(users);
+      return;
+    }
+    const jobs = await collectPages<{ id: string; name: string }>((offset) =>
+      context(res)
+        .db.from("job_positions")
+        .select("id,name")
+        .order("id")
+        .range(offset, offset + 499),
+    );
+    const byId = new Map(jobs.map((job) => [job.id, job]));
+    res.json(
+      users.map((user) => ({
+        ...user,
+        job: user.job_id ? (byId.get(user.job_id) ?? null) : null,
+      })),
+    );
+  });
+  app.post("/api/admin/users/:id/promote", async (req, res) => {
+    if (!context(res).profile.is_supreme)
+      throw new HttpError(
+        403,
+        "Somente a conta suprema pode promover administradores.",
+      );
+    checked(
+      await context(res).db.rpc("supreme_promote_admin", { p_id: id(req) }),
+    );
+    res.sendStatus(204);
+  });
+  app.post("/api/admin/users", async (req, res) => {
+    const body = employeeSchema.parse(req.body);
+    const results = checked(
+      await context(res).db.rpc("admin_create_employees", {
+        p_rows: [{ row: 1, data: body }],
+      }),
+    ) as { status: string; id?: string }[];
+    if (results[0]?.status === "duplicate")
+      throw new HttpError(409, "CPF ou e-mail já cadastrado.");
+    res.status(201).json({ id: results[0].id });
+  });
+  const csvUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 8 * 1024 * 1024, files: 1, fields: 1, fieldSize: 16 },
+  }).single("file");
+  app.post("/api/admin/users/import/:mode", csvUpload, async (req, res) => {
+    if (!["preview", "confirm"].includes(String(req.params.mode)))
+      throw new HttpError(404, "Operação inválida.");
+    if (!req.file) throw new HttpError(400, "Selecione um arquivo CSV.");
+    let cleaned;
+    try {
+      cleaned = cleanEmployees(req.file.buffer);
+    } catch (error) {
+      throw new HttpError(400, (error as Error).message);
+    }
+    if (req.params.mode === "preview") {
+      res.json(cleaned);
+      return;
+    }
+    const valid = cleaned.rows.filter((row) => !row.errors.length);
+    if (
+      valid.length < cleaned.rows.length &&
+      req.body?.ignorePending !== "true"
+    )
+      throw new HttpError(
+        400,
+        "Resolva ou ignore explicitamente as pendências antes de cadastrar.",
+      );
+    const results = valid.length
+      ? checked(
+          await context(res).db.rpc("admin_create_employees", {
+            p_rows: valid.map(({ row, data }) => ({ row, data })),
+          }),
+        )
+      : [];
+    res.json({ ...cleaned, results });
+  });
+  app.post("/api/admin/users/:id/password", async (req, res) => {
+    const body = z
+      .object({ reset: z.boolean().default(false) })
+      .parse(req.body ?? {});
+    const target = checked(
+      await context(res).db.rpc("admin_employee_password_target", {
+        p_id: id(req),
+        p_reset: body.reset,
+      }),
+    ) as {
+      id: string;
+      cpf: string;
+      auth_user_id?: string | null;
+      operation?: string;
+    };
+    // A reset requires explicit consent and a single-use database authorization.
+    const password = `Aa1!${randomBytes(18).toString("base64url")}`;
+    const { data, error } = target.auth_user_id
+      ? await service.auth.admin.updateUserById(target.auth_user_id, {
+          password,
+          app_metadata: { employee_password_operation: target.operation },
+        })
+      : await service.auth.admin.createUser({
+          id: target.id,
+          email: `${target.cpf}@cifraengenharia.com.br`,
+          password,
+          email_confirm: true,
+        });
     if (error || !data.user) {
       if (
         error?.code === "email_exists" ||
@@ -260,7 +424,7 @@ export function createApp(
       )
         throw new HttpError(
           409,
-          "Este e-mail já está cadastrado. Confira a lista de gerentes.",
+          "O acesso deste CPF já está cadastrado. Atualize a lista de usuários.",
         );
       if (error?.code === "weak_password")
         throw new HttpError(
@@ -282,15 +446,7 @@ export function createApp(
         "O serviço de autenticação não conseguiu criar o usuário. Verifique a configuração e os registros do Auth no Supabase.",
       );
     }
-    // Auth trigger creates an inactive profile. Failure below leaves it safely inactive and recoverable in user management.
-    checked(
-      await context(res).db.rpc("admin_save_profile", {
-        p_id: data.user.id,
-        p_name: body.name,
-        p_active: true,
-      }),
-    );
-    res.status(201).json({ id: data.user.id });
+    res.status(201).json({ password });
   });
   app.delete("/api/admin/users/:id", async (req, res) => {
     const result = await context(res).db.rpc("admin_prepare_manager_deletion", {
@@ -299,7 +455,7 @@ export function createApp(
     if (result.error?.code === "PGRST202")
       throw new HttpError(
         503,
-        "A exclusão de gerentes no Auth depende de uma atualização do banco de dados. Solicite a aplicação da migração de remoção da conta de login.",
+        "A exclusão de usuários no Auth depende de uma atualização do banco de dados. Solicite a aplicação da migração de remoção da conta de login.",
       );
     const authId = checked(result) as string | null;
     if (authId) {
@@ -477,7 +633,7 @@ export function createApp(
     );
     if (filters.format === "csv") {
       const header = [
-        "Gerente",
+        "Usuário",
         "E-mail",
         "Curso",
         "Versão",
@@ -537,7 +693,11 @@ export function createApp(
         return;
       }
       if (error instanceof multer.MulterError) {
-        res.status(400).json({ error: "Envie apenas um PDF de até 20 MB." });
+        res.status(400).json({
+          error: _req.path.startsWith("/api/admin/users/import/")
+            ? "Envie apenas um CSV de até 8 MB."
+            : "Envie apenas um PDF de até 20 MB.",
+        });
         return;
       }
       if (error instanceof HttpError) {
@@ -597,8 +757,12 @@ async function assignments(db: SupabaseClient) {
         )
         .order("id")
         .range(offset, offset + 499),
-    ) as unknown as ReportRow[];
-    all.push(...rows);
+    ) as unknown as (Omit<ReportRow, "manager"> & {
+      manager: Profile | null;
+    })[];
+    // RLS hides administrative profiles from other admins. Preserve their history
+    // for the supreme account without exposing incomplete rows or breaking CSV.
+    all.push(...rows.filter((row): row is ReportRow => row.manager !== null));
     if (rows.length < 500) break;
   }
   return all.map((a) => ({

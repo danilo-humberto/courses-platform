@@ -31,6 +31,24 @@ function fixture(profile = user) {
   };
 }
 describe("fronteira da API", () => {
+  it.each([
+    ["Gerente não encontrado", "Usuário não encontrado"],
+    [
+      "Gerente não encontrado ou excluído",
+      "Usuário não encontrado ou excluído",
+    ],
+    ["Gerente inativo ou inválido", "Usuário inativo ou inválido"],
+    ["Selecione de 1 a 200 gerentes", "Selecione de 1 a 200 usuários"],
+  ])("atualiza mensagem legada do banco: %s", async (message, expected) => {
+    const { app, rpc } = fixture({ ...user, role: "admin" });
+    rpc.mockResolvedValue({ data: null, error: { code: "P0001", message } });
+    const response = await request(app)
+      .post(`/api/admin/versions/${user.id}/assign`)
+      .auth("token", { type: "bearer" })
+      .send({ managers: [user.id] });
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe(expected);
+  });
   it("limpa todo o relatório com confirmação explícita", async () => {
     const { app, rpc } = fixture({ ...user, role: "admin" });
     const response = await request(app)
@@ -57,7 +75,7 @@ describe("fronteira da API", () => {
       expect(rpc).not.toHaveBeenCalled();
     },
   );
-  it("nega limpeza ao gerente", async () => {
+  it("nega limpeza ao usuário", async () => {
     const { app, rpc } = fixture();
     expect(
       (
@@ -132,7 +150,7 @@ describe("fronteira da API", () => {
     );
     expect(response.text).not.toContain("internal details");
   });
-  it("nega exclusão de curso ao gerente e valida UUID", async () => {
+  it("nega exclusão de curso ao usuário e valida UUID", async () => {
     const denied = fixture();
     expect(
       (
@@ -229,7 +247,7 @@ describe("fronteira da API", () => {
     ).toBe(204);
     expect(deleteUser).not.toHaveBeenCalled();
   });
-  it("nega exclusão ao gerente e rejeita identificador inválido", async () => {
+  it("nega exclusão ao usuário e rejeita identificador inválido", async () => {
     const denied = fixture();
     expect(
       (
@@ -259,7 +277,14 @@ describe("fronteira da API", () => {
       const app = createApp(config, {
         authenticate: async () => ({
           profile: { ...user, role: "admin" },
-          db: {} as SupabaseClient,
+          db: {
+            rpc: vi
+              .fn()
+              .mockResolvedValue({
+                data: { id: user.id, cpf: "01234567890" },
+                error: null,
+              }),
+          } as unknown as SupabaseClient,
         }),
         service: {
           auth: {
@@ -273,7 +298,7 @@ describe("fronteira da API", () => {
         } as unknown as SupabaseClient,
       });
       const response = await request(app)
-        .post("/api/admin/users")
+        .post(`/api/admin/users/${user.id}/password`)
         .auth("token", { type: "bearer" })
         .send({
           name: "Teste",
@@ -295,7 +320,7 @@ describe("fronteira da API", () => {
           .auth("token", { type: "bearer" })
       ).status,
     ).toBe(403));
-  it("nega todas as rotas administrativas ao gerente", async () => {
+  it("nega todas as rotas administrativas ao usuário", async () => {
     for (const path of ["/users", "/reports", "/audit"])
       expect(
         (

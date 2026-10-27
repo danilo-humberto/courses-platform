@@ -9,6 +9,7 @@ import {
 import { configured, supabase } from "./lib";
 import { Logo, ErrorNotice } from "./components/shared";
 import { Button } from "./components/ui/button";
+import { loginEmail } from "./login";
 export function Auth({ recovery = false }: { recovery?: boolean }) {
   const [reset, setReset] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -36,6 +37,16 @@ export function Auth({ recovery = false }: { recovery?: boolean }) {
         await supabase.auth.signOut();
         window.location.assign("/");
       } else if (reset) {
+        if (
+          /^\d{11}(?:@cifraengenharia\.com\.br)?$/i.test(
+            String(form.get("email")).trim(),
+          )
+        ) {
+          setNotice(
+            "Para recuperar o acesso por CPF, procure o administrador. O endereço interno não recebe e-mails.",
+          );
+          return;
+        }
         await supabase.auth.resetPasswordForEmail(String(form.get("email")), {
           redirectTo: `${window.location.origin}/redefinir-senha`,
         });
@@ -44,12 +55,12 @@ export function Auth({ recovery = false }: { recovery?: boolean }) {
         );
       } else {
         const { error } = await supabase.auth.signInWithPassword({
-          email: String(form.get("email")),
+          email: loginEmail(String(form.get("email"))),
           password: String(form.get("password")),
         });
         if (error)
           throw new Error(
-            "E-mail ou senha inválidos. Confira e tente novamente.",
+            "CPF, e-mail ou senha inválidos. Confira e tente novamente.",
           );
       }
     } catch (e) {
@@ -87,7 +98,7 @@ export function Auth({ recovery = false }: { recovery?: boolean }) {
         </div>
         <footer>
           Juntos, construímos o próximo passo.{" "}
-          <span>© {new Date().getFullYear()} CIFRA</span>
+          <span>© {new Date().getFullYear()} Cifra Academy</span>
         </footer>
       </section>
       <section className="auth-form">
@@ -104,7 +115,7 @@ export function Auth({ recovery = false }: { recovery?: boolean }) {
             {recovery
               ? "Escolha uma senha com pelo menos 12 caracteres."
               : reset
-                ? "Informe seu e-mail corporativo para receber as instruções."
+                ? "Para acesso por CPF, procure o administrador. Contas antigas podem recuperar pelo e-mail."
                 : "Acesse sua conta e continue sua jornada de desenvolvimento."}
           </p>
           {!configured && (
@@ -116,12 +127,12 @@ export function Auth({ recovery = false }: { recovery?: boolean }) {
           <form onSubmit={submit}>
             {!recovery && (
               <label>
-                E-mail corporativo
+                CPF ou e-mail
                 <input
                   name="email"
-                  type="email"
-                  placeholder="voce@empresa.com.br"
-                  autoComplete="email"
+                  type="text"
+                  placeholder="CPF sem pontuação"
+                  autoComplete="username"
                   required
                 />
               </label>

@@ -122,7 +122,7 @@ export function Dashboard({ admin, name }: { admin: boolean; name: string }) {
         {(admin
           ? [
               {
-                title: "Gerentes cadastrados",
+                title: "Usuários cadastrados",
                 value: users.filter((u) => u.role === "manager").length,
                 hint: `${users.filter((u) => u.role === "manager" && u.active).length} com acesso ativo`,
                 icon: Users,
@@ -265,7 +265,7 @@ export function Dashboard({ admin, name }: { admin: boolean; name: string }) {
               }
             >
               {admin
-                ? "Publique um curso e atribua aos gerentes para acompanhar a evolução."
+                ? "Publique um curso e atribua aos usuários para acompanhar a evolução."
                 : "Novos treinamentos aparecerão quando forem atribuídos a você."}
             </Empty>
           )}
@@ -525,12 +525,12 @@ export function Reports() {
       <ErrorNotice message={error} />
       <div className="filters">
         <select
-          aria-label="Gerente"
+          aria-label="Usuário"
           disabled={clearing}
           value={manager}
           onChange={(e) => setManager(e.target.value)}
         >
-          <option value="">Todos os gerentes</option>
+          <option value="">Todos os usuários</option>
           {users
             .filter((u) => u.role === "manager" && !u.deleted_at)
             .map((u) => (
@@ -580,7 +580,7 @@ export function Reports() {
             <table>
               <thead>
                 <tr>
-                  <th>Gerente / Curso</th>
+                  <th>Usuário / Curso</th>
                   <th>Situação</th>
                   <th>Progresso</th>
                   <th>Início / Conclusão</th>
@@ -670,7 +670,7 @@ export function Reports() {
           </p>
           <p>
             Atribuições, progressos, respostas, tentativas e conclusões serão
-            apagados definitivamente, inclusive do histórico dos gerentes.
+            apagados definitivamente, inclusive do histórico dos usuários.
             Cursos, contas e registros de auditoria serão preservados.
           </p>
           <p>

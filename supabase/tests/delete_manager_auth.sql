@@ -43,7 +43,7 @@ do $$ declare snapshot_after jsonb; begin
   if snapshot_after is distinct from (select snapshot from history_before) then raise exception 'History changed'; end if;
   if public.admin_prepare_manager_deletion('10000000-0000-4000-8000-000000000002') is not null then raise exception 'Completed deletion not idempotent'; end if;
 end $$;
-insert into auth.users values('10000000-0000-4000-8000-000000000099','ana@example.test');
+insert into auth.users(id,email) values('10000000-0000-4000-8000-000000000099','ana@example.test');
 select public.admin_save_profile('10000000-0000-4000-8000-000000000099','New Ana',true);
 set role authenticated;
 select set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000099',true);

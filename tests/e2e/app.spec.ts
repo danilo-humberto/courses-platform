@@ -1,6 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import type { Assignment, Course, Profile } from "../../apps/web/src/types";
+import type {
+  Assignment,
+  Course,
+  Profile,
+  JobPosition,
+} from "../../apps/web/src/types";
 const manager: Profile = {
   id: "10000000-0000-4000-8000-000000000002",
   name: "Ana Souza",
@@ -35,12 +40,68 @@ const course: Course = {
   ],
 };
 const questionId = "50000000-0000-4000-8000-000000000001";
+test("usuários: paginação de 20, busca e exclusão na última página", async ({
+  page,
+}) => {
+  const f = await fixture(page, "admin");
+  f.users.splice(
+    0,
+    f.users.length,
+    ...Array.from({ length: 41 }, (_, i) => ({
+      ...manager,
+      id: `synthetic-user-${i}`,
+      name: `Participante ${String(i + 1).padStart(2, "0")}`,
+      email: `participante${i + 1}@example.test`,
+    })),
+  );
+  await page.goto("/usuarios");
+  const rows = page.locator("tbody tr");
+  const previous = page.getByRole("button", { name: "Anterior", exact: true });
+  const next = page.getByRole("button", { name: "Próxima", exact: true });
+  await expect(rows).toHaveCount(20);
+  await expect(previous).toBeDisabled();
+  await expect(page.getByText("Página 1 de 3", { exact: true })).toBeVisible();
+  await next.click();
+  await expect(rows).toHaveCount(20);
+  await expect(rows.first()).toContainText("Participante 21");
+  await previous.click();
+  await expect(rows.first()).toContainText("Participante 01");
+  await next.click();
+  await next.click();
+  await expect(rows).toHaveCount(1);
+  await expect(next).toBeDisabled();
+  await page.getByRole("button", { name: "Ver mais", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Excluir Participante 41", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Confirmar exclusão", exact: true })
+    .click();
+  await expect(rows).toHaveCount(20);
+  await expect(page.getByText("Página 2 de 2", { exact: true })).toBeVisible();
+  await page
+    .getByRole("textbox", { name: "Buscar usuário" })
+    .fill("Participante 01");
+  await expect(rows).toHaveCount(1);
+  await expect(page.getByText("Página 1 de 1", { exact: true })).toBeVisible();
+  await expect(previous).toBeDisabled();
+  await expect(next).toBeDisabled();
+  await page
+    .getByRole("textbox", { name: "Buscar usuário" })
+    .fill("inexistente");
+  await expect(rows).toHaveCount(0);
+  await expect(page.getByText("Nenhum usuário encontrado")).toBeVisible();
+});
 async function fixture(
   page: Page,
   role: "admin" | "manager" = "manager",
   quiz = false,
+  supreme = false,
 ) {
-  const profile = role === "admin" ? admin : manager;
+  const profile = {
+    ...(role === "admin" ? admin : manager),
+    is_supreme: supreme,
+  };
   const courses = structuredClone([course]);
   courses[0].versions[0].quiz_enabled = quiz;
   const assignment: Assignment = {
@@ -110,6 +171,11 @@ async function fixture(
     if (path === "/me") return ok(profile);
     if (path === "/courses") return ok(courses);
     if (path === "/admin/users" && method === "GET") return ok(users);
+    if (path === "/admin/jobs" && method === "GET") return ok([]);
+    if (path.endsWith("/promote") && method === "POST") {
+      users.find((u) => u.id === path.split("/").at(-2))!.role = "admin";
+      return route.fulfill({ status: 204 });
+    }
     if (path.startsWith("/admin/users/") && method === "DELETE") {
       const target = users.find((u) => u.id === path.split("/").at(-1))!;
       target.active = false;
@@ -124,6 +190,8 @@ async function fixture(
         ...manager,
         ...req.postDataJSON(),
         id: crypto.randomUUID(),
+        credential_pending: true,
+        auth_user_id: null,
       });
       return ok({ id: users.at(-1)!.id }, 201);
     }
@@ -141,7 +209,7 @@ async function fixture(
           headers: {
             "Content-Disposition": 'attachment; filename="cifra-auditoria.csv"',
           },
-          body: "Gerente,Curso\nAna,Cultura",
+          body: "Usuário,Curso\nAna,Cultura",
         });
       return ok(
         [assignment].filter(
@@ -253,6 +321,333 @@ async function fixture(
     },
   };
 }
+async function jobsFixture(page: Page) {
+  const f = await fixture(page, "admin");
+  const jobs: JobPosition[] = [
+    {
+      id: "70000000-0000-4000-8000-000000000001",
+      name: "Analista",
+      description: "Equipe técnica",
+    },
+  ];
+  f.users.push({
+    ...manager,
+    id: "10000000-0000-4000-8000-000000000003",
+    name: "Bia Lima",
+    email: "bia@example.test",
+  });
+  let failAssignment = false;
+  await page.route("**/api/admin/jobs**", async (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const body =
+      req.method() === "GET" || req.method() === "DELETE"
+        ? null
+        : req.postDataJSON();
+    if (req.method() === "GET") return route.fulfill({ json: jobs });
+    if (path.endsWith("/assign")) {
+      if (failAssignment) {
+        failAssignment = false;
+        return route.fulfill({
+          status: 400,
+          json: {
+            error: "Um dos usuários está inativo. Nenhum cargo foi alterado.",
+          },
+        });
+      }
+      const job = jobs.find((item) => path.includes(item.id))!;
+      for (const user of f.users.filter((item) =>
+        body.users.includes(item.id),
+      )) {
+        user.job_id = job.id;
+        user.job = { id: job.id, name: job.name };
+      }
+      return route.fulfill({ status: 204 });
+    }
+    if (req.method() === "POST") {
+      if (
+        jobs.some(
+          (job) => job.name.toLowerCase() === body.name.trim().toLowerCase(),
+        )
+      )
+        return route.fulfill({
+          status: 400,
+          json: { error: "Já existe um cargo com esse nome." },
+        });
+      const created = { id: "70000000-0000-4000-8000-000000000002", ...body };
+      jobs.push(created);
+      return route.fulfill({ status: 201, json: { id: created.id } });
+    }
+    const job = jobs.find((item) => path.endsWith(item.id))!;
+    if (req.method() === "PATCH") {
+      Object.assign(job, body);
+      for (const user of f.users.filter((item) => item.job_id === job.id))
+        user.job = { id: job.id, name: job.name };
+    }
+    if (req.method() === "DELETE") {
+      jobs.splice(jobs.indexOf(job), 1);
+      for (const user of f.users.filter((item) => item.job_id === job.id)) {
+        user.job_id = null;
+        user.job = null;
+      }
+    }
+    return route.fulfill({ status: 204 });
+  });
+  return {
+    ...f,
+    jobs,
+    failNextAssignment: () => {
+      failAssignment = true;
+    },
+  };
+}
+
+test("cargos: CRUD e atribuição em lote substituem cargo e preservam usuários", async ({
+  page,
+}) => {
+  const f = await jobsFixture(page);
+  await page.goto("/cargos");
+  await expect(
+    page.getByRole("button", { name: "Atribuir Analista", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: "test-results/jobs-desktop.png",
+    fullPage: true,
+  });
+  await page
+    .getByRole("button", { name: "Atribuir Analista", exact: true })
+    .click();
+  await page.getByRole("checkbox", { name: /Ana Souza/ }).check();
+  await page.getByRole("checkbox", { name: /Bia Lima/ }).check();
+  await page
+    .getByRole("button", { name: "Atribuir a 2 usuário(s)", exact: true })
+    .click();
+  await expect(
+    page.getByText("Cargo atribuído a 2 usuário(s).", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Atribuir Analista", exact: true })
+    .click();
+  await expect(page.getByRole("checkbox", { name: /Ana Souza/ })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: /Bia Lima/ })).toBeDisabled();
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Cadastrar cargo", exact: true })
+    .click();
+  await page.getByLabel("Nome do cargo").fill("Engenheiro");
+  await page.getByLabel("Descrição", { exact: true }).fill("Obras");
+  await page.getByRole("button", { name: "Salvar cargo", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Atribuir Engenheiro", exact: true })
+    .click();
+  await expect(page.getByText("Cargo atual: Analista")).toHaveCount(2);
+  await page.getByRole("checkbox", { name: /Ana Souza/ }).check();
+  await page
+    .getByRole("button", { name: "Atribuir a 1 usuário(s)", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Editar Engenheiro", exact: true })
+    .click();
+  await page.getByLabel("Nome do cargo").fill("Engenheiro civil");
+  await page.getByRole("button", { name: "Salvar cargo", exact: true }).click();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Editar Engenheiro civil", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "Ana Souza" })
+    .getByRole("button", { name: "Ver mais" })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText("Engenheiro civil");
+  await page.getByRole("button", { name: "Fechar", exact: true }).click();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "Bia Lima" })
+    .getByRole("button", { name: "Ver mais" })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText("Analista");
+  await page.getByRole("button", { name: "Fechar", exact: true }).click();
+  await page.getByRole("link", { name: "Cargos", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Excluir Engenheiro civil", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  expect(f.jobs).toHaveLength(2);
+  await page
+    .getByRole("button", { name: "Excluir Engenheiro civil", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Confirmar exclusão", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Editar Engenheiro civil", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "Ana Souza" })
+    .getByRole("button", { name: "Ver mais" })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText("Sem função");
+  await page.getByRole("button", { name: "Fechar", exact: true }).click();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "Bia Lima" })
+    .getByRole("button", { name: "Ver mais" })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText("Analista");
+});
+
+test("cargos: falhas preservam seleção e cadastro; busca mantém selecionados", async ({
+  page,
+}) => {
+  const f = await jobsFixture(page);
+  await page.goto("/cargos");
+  await page
+    .getByRole("button", { name: "Cadastrar cargo", exact: true })
+    .click();
+  await page.getByLabel("Nome do cargo").fill("Analista");
+  await page.getByRole("button", { name: "Salvar cargo", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Já existe um cargo com esse nome.",
+  );
+  await expect(page.getByLabel("Nome do cargo")).toHaveValue("Analista");
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Atribuir Analista", exact: true })
+    .click();
+  await page.getByRole("checkbox", { name: /Ana Souza/ }).check();
+  await page
+    .getByRole("textbox", { name: "Buscar usuário para atribuir cargo" })
+    .fill("Bia");
+  await page.getByRole("checkbox", { name: /Bia Lima/ }).check();
+  f.failNextAssignment();
+  await page
+    .getByRole("button", { name: "Atribuir a 2 usuário(s)", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Nenhum cargo foi alterado.",
+  );
+  await expect(
+    page.getByRole("button", { name: "Atribuir a 2 usuário(s)", exact: true }),
+  ).toBeEnabled();
+  expect(f.users.filter((user) => user.job_id)).toHaveLength(0);
+  await page
+    .getByRole("button", { name: "Atribuir a 2 usuário(s)", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("cargos: consulta falha com retry e usuários comuns não acessam gestão", async ({
+  page,
+}) => {
+  await jobsFixture(page);
+  await page.goto("/cargos");
+  await expect(
+    page.getByRole("button", { name: "Atribuir Analista", exact: true }),
+  ).toBeVisible();
+  const fail = (route: import("@playwright/test").Route) =>
+    route.fulfill({ status: 503, json: { error: "Consulta indisponível" } });
+  await page.route("**/api/admin/users", fail);
+  await page
+    .getByRole("button", { name: "Atribuir Analista", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Tentar novamente", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await page.unroute("**/api/admin/users", fail);
+  await page
+    .getByRole("button", { name: "Tentar novamente", exact: true })
+    .click();
+  await expect(page.getByRole("checkbox", { name: /Ana Souza/ })).toBeEnabled();
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await fixture(page, "manager");
+  await page.goto("/cargos");
+  await expect(
+    page.getByRole("link", { name: "Meus treinamentos", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Cargos", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Cadastrar cargo", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("atribuição mostra vínculos salvos e atualiza ao reabrir", async ({
+  page,
+}) => {
+  const f = await fixture(page, "admin");
+  let assigned = false;
+  await page.route("**/api/assignments", (route) =>
+    route.fulfill({ json: assigned ? [f.assignment] : [] }),
+  );
+  await page.route(
+    `**/api/admin/versions/${f.assignment.version_id}/assign`,
+    (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        managers: [manager.id],
+      });
+      assigned = true;
+      return route.fulfill({ json: null });
+    },
+  );
+  await page.goto("/cursos");
+  await page.getByRole("button", { name: "Atribuir", exact: true }).click();
+  const checkbox = page.getByRole("checkbox", { name: /Ana Souza/ });
+  await expect(checkbox).not.toBeChecked();
+  await checkbox.check();
+  await page
+    .getByRole("button", { name: "Atribuir a 1 usuário(s)", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Atribuir", exact: true }).click();
+  await expect(checkbox).toBeChecked();
+  await expect(checkbox).toBeDisabled();
+  await expect(page.getByText("Já atribuído", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Atribuir a 0 usuário(s)" }),
+  ).toBeDisabled();
+});
+
+test("atribuição considera somente a versão selecionada", async ({ page }) => {
+  const f = await fixture(page, "admin");
+  f.assignment.version_id = "30000000-0000-4000-8000-000000000099";
+  await page.goto("/cursos");
+  await page.getByRole("button", { name: "Atribuir", exact: true }).click();
+  const checkbox = page.getByRole("checkbox", { name: /Ana Souza/ });
+  await expect(checkbox).toBeEnabled();
+  await expect(checkbox).not.toBeChecked();
+});
+
+test("falha ao consultar atribuições bloqueia seleção e permite tentar novamente", async ({
+  page,
+}) => {
+  await fixture(page, "admin");
+  await page.goto("/cursos");
+  await page.route("**/api/assignments", (route) =>
+    route.fulfill({
+      status: 500,
+      json: { error: "Falha ao carregar atribuições." },
+    }),
+  );
+  await page.getByRole("button", { name: "Atribuir", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Atribuir a 0 usuário(s)" }),
+  ).toBeDisabled();
+  await expect(page.getByRole("checkbox", { name: /Ana Souza/ })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("button", { name: "Tentar novamente" }),
+  ).toBeVisible();
+  await page.unroute("**/api/assignments");
+  await page.getByRole("button", { name: "Tentar novamente" }).click();
+  await expect(page.getByRole("checkbox", { name: /Ana Souza/ })).toBeChecked();
+});
+
 test("exclusão de curso confirma, cancela e preserva arquivamento", async ({
   page,
 }) => {
@@ -390,11 +785,12 @@ test("exclusão antiga ou pendente permite concluir remoção do Auth", async ({
       auth_user_id: manager.id,
     },
   );
-  await page.goto("/gerentes");
+  await page.goto("/usuarios");
   await expect(page.getByText("Exclusão pendente")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Editar", exact: true }),
   ).toHaveCount(0);
+  await page.getByRole("button", { name: "Ver mais", exact: true }).click();
   await page.getByRole("button", { name: `Excluir ${manager.name}` }).click();
   await expect(
     page.getByText(/A conta de login será apagada do Supabase Auth/),
@@ -402,11 +798,11 @@ test("exclusão antiga ou pendente permite concluir remoção do Auth", async ({
   await page.getByRole("button", { name: "Confirmar exclusão" }).click();
   await expect(
     page.getByText(
-      "Gerente excluído. O e-mail foi liberado e o histórico preservado.",
+      "Usuário excluído. O e-mail foi liberado e o histórico preservado.",
     ),
   ).toBeVisible();
   await page.reload();
-  await expect(page.getByText("Nenhum gerente encontrado")).toBeVisible();
+  await expect(page.getByText("Nenhum usuário encontrado")).toBeVisible();
 });
 test("limpeza global confirma, cancela e trata falhas", async ({ page }) => {
   await fixture(page, "admin");
@@ -472,7 +868,7 @@ test("dashboard administrativo e exportação filtrada", async ({ page }) => {
     page.getByRole("heading", { name: "Visão geral" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("table", { name: "Treinamentos por gerente" }),
+    page.getByRole("table", { name: "Treinamentos por usuário" }),
   ).toHaveCount(0);
   await expect(page.getByText("Cultura e valores CIFRA")).toBeVisible();
   await page.screenshot({ path: "test-results/dashboard.png", fullPage: true });
@@ -592,35 +988,37 @@ test("renovação da sessão preserva o formulário aberto", async ({ page }) =>
 
 test("exclusão exige confirmação e preserva relatórios", async ({ page }) => {
   await fixture(page, "admin");
-  await page.goto("/gerentes");
+  await page.goto("/usuarios");
+  await page.getByRole("button", { name: "Ver mais", exact: true }).click();
   await page.getByRole("button", { name: "Excluir Ana Souza" }).click();
   await expect(page.getByRole("dialog")).toContainText(
     "histórico de treinamentos será preservado",
   );
   await page.getByRole("button", { name: "Cancelar", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Excluir Ana Souza" }),
+    page.getByRole("button", { name: "Ver mais", exact: true }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "Ver mais", exact: true }).click();
   await page.getByRole("button", { name: "Excluir Ana Souza" }).click();
   await page.getByRole("button", { name: "Confirmar exclusão" }).click();
   await expect(page.getByRole("status")).toContainText(
-    "Gerente excluído. O e-mail foi liberado e o histórico preservado.",
+    "Usuário excluído. O e-mail foi liberado e o histórico preservado.",
   );
   await page.getByRole("button", { name: "Fechar notificação" }).click();
   await expect(
     page.getByText(
-      "Gerente excluído. O e-mail foi liberado e o histórico preservado.",
+      "Usuário excluído. O e-mail foi liberado e o histórico preservado.",
     ),
   ).toHaveCount(0);
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByText("Nenhum gerente encontrado")).toBeVisible();
+  await expect(page.getByText("Nenhum usuário encontrado")).toBeVisible();
   await page.reload();
-  await expect(page.getByText("Nenhum gerente encontrado")).toBeVisible();
+  await expect(page.getByText("Nenhum usuário encontrado")).toBeVisible();
   await page.goto("/relatorios");
   await expect(page.getByRole("table")).toContainText("Ana Souza");
 });
 
-test("falha na exclusão mantém gerente e permite tentar novamente", async ({
+test("falha na exclusão mantém usuário e permite tentar novamente", async ({
   page,
 }) => {
   const f = await fixture(page, "admin");
@@ -639,7 +1037,8 @@ test("falha na exclusão mantém gerente e permite tentar novamente", async ({
       body: JSON.stringify({ error: "Falha simulada" }),
     });
   });
-  await page.goto("/gerentes");
+  await page.goto("/usuarios");
+  await page.getByRole("button", { name: "Ver mais", exact: true }).click();
   await page.getByRole("button", { name: "Excluir Ana Souza" }).click();
   await page.getByRole("button", { name: "Confirmar exclusão" }).click();
   await expect(page.getByRole("dialog")).toContainText("Falha simulada");
@@ -660,7 +1059,7 @@ test("falha na exclusão mantém gerente e permite tentar novamente", async ({
   await expect(page.locator(".system-toast")).toContainText("Falha simulada");
   await expect(
     page.getByText(
-      "Gerente excluído. O e-mail foi liberado e o histórico preservado.",
+      "Usuário excluído. O e-mail foi liberado e o histórico preservado.",
     ),
   ).toHaveCount(0);
   await expect(
@@ -672,31 +1071,46 @@ test("falha na exclusão mantém gerente e permite tentar novamente", async ({
     page.getByRole("button", { name: "Editar", exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Excluir Ana Souza" }),
+    page.getByRole("button", { name: "Ver mais", exact: true }),
   ).toBeVisible();
 });
 
-test("cadastro e desativação de gerente", async ({ page }) => {
+test("endereço antigo de gerentes redireciona para usuários", async ({
+  page,
+}) => {
   await fixture(page, "admin");
   await page.goto("/gerentes");
-  await page.getByRole("button", { name: "Cadastrar gerente" }).click();
+  await expect(page).toHaveURL(/\/usuarios$/);
+  await expect(
+    page.getByRole("heading", { name: "Usuários", exact: true }),
+  ).toBeVisible();
+});
+
+test("cadastro e desativação de usuário", async ({ page }) => {
+  await fixture(page, "admin");
+  await page.goto("/usuarios");
+  await page.getByRole("button", { name: "Cadastrar usuário" }).click();
   await page.getByLabel("Nome completo").fill("Carlos Teste");
   await page.getByLabel("E-mail corporativo").fill("carlos@example.test");
-  await page.getByLabel("Senha inicial").fill("synthetic-password-123");
-  await page.getByRole("button", { name: "Salvar gerente" }).click();
+  await page.getByLabel("CPF", { exact: true }).fill("01234567890");
+  await page.getByRole("button", { name: "Salvar usuário" }).click();
   await expect(page.getByText("Carlos Teste", { exact: true })).toBeVisible();
   await expect(page.getByRole("status")).toContainText(
-    "Gerente cadastrado com sucesso.",
+    "Usuário cadastrado com sucesso.",
   );
   await page
     .getByRole("row")
     .filter({ hasText: "Carlos Teste" })
-    .getByRole("button", { name: "Editar" })
+    .getByRole("button", { name: "Ver mais" })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Editar", exact: true })
     .click();
   await page.getByLabel("Acesso ativo").uncheck();
-  await page.getByRole("button", { name: "Salvar gerente" }).click();
+  await page.getByRole("button", { name: "Salvar usuário" }).click();
   await expect(page.getByRole("status")).toContainText(
-    "Gerente atualizado com sucesso.",
+    "Usuário atualizado com sucesso.",
   );
   await page.screenshot({
     path: "test-results/toast-success.png",
@@ -709,7 +1123,335 @@ test("cadastro e desativação de gerente", async ({ page }) => {
       .getByText("Desativado"),
   ).toBeVisible();
 });
-test("gerente tem navegação própria e layout móvel sem overflow", async ({
+
+test("cadastro sem e-mail e geração da senha inicial", async ({ page }) => {
+  await fixture(page, "admin");
+  let credentialRequest = 0;
+  await page.route("**/api/admin/users/*/password", (route) => {
+    credentialRequest++;
+    return route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ password: "Synthetic-only-Password-123!" }),
+    });
+  });
+  await page.goto("/usuarios");
+  await page
+    .getByRole("button", { name: "Cadastrar usuário", exact: true })
+    .click();
+  await page.getByLabel("Nome completo").fill("Funcionário Sintético");
+  await page.getByLabel("CPF", { exact: true }).fill("01234567890");
+  await expect(page.getByLabel("Senha inicial")).toHaveCount(0);
+  await page.getByRole("button", { name: "Salvar usuário" }).click();
+  const row = page
+    .getByRole("row")
+    .filter({ hasText: "Funcionário Sintético" });
+  await expect(row).toContainText("Sem senha");
+  await row.getByRole("button", { name: "Gerar senha" }).click();
+  expect(credentialRequest).toBe(0);
+  await page.getByRole("button", { name: "Confirmar geração" }).click();
+  await expect(page.getByLabel("Senha gerada")).toHaveValue(
+    "Synthetic-only-Password-123!",
+  );
+  expect(credentialRequest).toBe(1);
+  await page
+    .getByRole("button", { name: "Fechar", exact: true })
+    .last()
+    .click();
+  await expect(page.getByLabel("Senha gerada")).toHaveCount(0);
+});
+
+test("resposta perdida permite gerar nova senha com confirmação explícita", async ({
+  page,
+}) => {
+  const f = await fixture(page, "admin");
+  const target = f.users.find((user) => user.role === "manager")!;
+  Object.assign(target, {
+    cpf: "01234567890",
+    credential_pending: true,
+    auth_user_id: null,
+  });
+  let attempts = 0;
+  await page.route("**/api/admin/users/*/password", (route) => {
+    attempts++;
+    if (attempts === 1) {
+      Object.assign(target, {
+        credential_pending: false,
+        auth_user_id: target.id,
+      });
+      return route.fulfill({
+        status: 502,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Resposta perdida após geração." }),
+      });
+    }
+    expect(route.request().postDataJSON()).toEqual({ reset: true });
+    return route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ password: "Replacement-synthetic-123!" }),
+    });
+  });
+  await page.goto("/usuarios");
+  await page.getByRole("button", { name: "Gerar senha", exact: true }).click();
+  await page.getByRole("button", { name: "Confirmar geração" }).click();
+  await expect(
+    page.getByRole("alert").getByText("Resposta perdida após geração."),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Fechar", exact: true })
+    .last()
+    .click();
+  await page.getByRole("button", { name: "Gerar nova senha" }).click();
+  await expect(
+    page.getByText(/A senha anterior deixará de funcionar/),
+  ).toBeVisible();
+  expect(attempts).toBe(1);
+  await page.getByRole("button", { name: "Confirmar geração" }).click();
+  await expect(page.getByLabel("Senha gerada")).toHaveValue(
+    "Replacement-synthetic-123!",
+  );
+  expect(attempts).toBe(2);
+});
+
+test("importação exibe limpeza antes de confirmar e resultado por registro", async ({
+  page,
+}) => {
+  await fixture(page, "admin");
+  let confirmed = false;
+  const preview = {
+    total: 3,
+    dismissed: 1,
+    rows: [
+      {
+        row: 2,
+        data: {
+          name: "Ana Importada",
+          email: "",
+          cpf: "01234567890",
+          state: "PE",
+          cost_center: "TI",
+          job_name: "Analista",
+        },
+        errors: [],
+      },
+      {
+        row: 3,
+        data: {
+          name: "CPF inválido",
+          email: "",
+          cpf: "123",
+          state: "PE",
+          cost_center: "TI",
+          job_name: "Analista",
+        },
+        errors: ["CPF deve conter 11 dígitos."],
+      },
+    ],
+  };
+  await page.route("**/api/admin/users/import/*", (route) => {
+    confirmed = route.request().url().endsWith("/confirm");
+    if (confirmed)
+      expect(route.request().postData()).toContain(
+        'name="ignorePending"\r\n\r\ntrue',
+      );
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...preview,
+        ...(confirmed ? { results: [{ row: 2, status: "created" }] } : {}),
+      }),
+    });
+  });
+  await page.goto("/usuarios");
+  await page.getByRole("button", { name: "Importar base" }).click();
+  await page.getByLabel("Base de funcionários").setInputFiles({
+    name: "synthetic.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("synthetic"),
+  });
+  await page.getByRole("button", { name: "Analisar e limpar" }).click();
+  await expect(
+    page.getByRole("status", { name: "Resumo da limpeza" }),
+  ).toContainText(
+    "3Registros na base1Desligados ignorados1Aptos para cadastro1Com pendências",
+  );
+  expect(confirmed).toBe(false);
+  await expect(page.getByText("CPF deve conter 11 dígitos.")).toBeVisible();
+  const pendingCard = page.getByRole("button", { name: /Com pendências/ });
+  await pendingCard.click();
+  await expect(pendingCard).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.getByRole("cell", { name: "Ana Importada", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("cell", { name: "CPF inválido", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Cadastrar 1 funcionários" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Ignorar pendências", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Cadastrar 1 funcionários" }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Reconsiderar pendências", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Cadastrar 1 funcionários" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Ignorar pendências", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Mostrar todos", exact: true })
+    .click();
+  await expect(pendingCard).toHaveAttribute("aria-pressed", "false");
+  await expect(
+    page.getByRole("cell", { name: "Ana Importada", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Cadastrar 1 funcionários" }).click();
+  await expect(
+    page.getByText("Importação concluída: 1 cadastrados; 0 já existentes."),
+  ).toBeVisible();
+  expect(confirmed).toBe(true);
+  await page.screenshot({
+    path: "test-results/employee-import.png",
+    fullPage: true,
+  });
+});
+
+test("filtro de pendências reinicia paginação e limpa ao trocar arquivo", async ({
+  page,
+}) => {
+  await fixture(page, "admin");
+  let previews = 0;
+  await page.route("**/api/admin/users/import/preview", (route) => {
+    previews++;
+    const rows = Array.from({ length: 27 }, (_, index) => ({
+      row: index + 2,
+      data: {
+        name: `Pessoa ${index + 1}`,
+        email: "",
+        cpf: "01234567890",
+        state: "PE",
+        cost_center: "TI",
+        job_name: "Analista",
+      },
+      errors: previews <= 2 && index === 0 ? ["CPF duplicado no arquivo."] : [],
+    }));
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ total: 27, dismissed: 0, rows }),
+    });
+  });
+  await page.goto("/usuarios");
+  await page.getByRole("button", { name: "Importar base" }).click();
+  const upload = page.getByLabel("Base de funcionários");
+  await upload.setInputFiles({
+    name: "synthetic.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("synthetic"),
+  });
+  await page.getByRole("button", { name: "Analisar e limpar" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Próxima", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog").getByText("Página 2 de 2"),
+  ).toBeVisible();
+  const pending = page.getByRole("button", { name: /Com pendências/ });
+  await pending.press("Enter");
+  await expect(
+    page.getByRole("dialog").getByText("Página 1 de 1"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "Pessoa 1", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "Pessoa 27", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Próxima", exact: true }),
+  ).toBeDisabled();
+  await pending.press("Space");
+  await expect(
+    page.getByRole("dialog").getByText("Página 1 de 2"),
+  ).toBeVisible();
+  await pending.click();
+  await page.screenshot({
+    path: "test-results/employee-pending-filter.png",
+    fullPage: true,
+  });
+  await page
+    .getByRole("button", { name: "Ignorar pendências", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Cadastrar 26 funcionários" }),
+  ).toBeEnabled();
+  await upload.setInputFiles({
+    name: "another.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("synthetic"),
+  });
+  await page.getByRole("button", { name: "Analisar e limpar" }).click();
+  await expect(
+    page.getByRole("button", { name: "Cadastrar 26 funcionários" }),
+  ).toBeDisabled();
+  await upload.setInputFiles({
+    name: "corrected.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("synthetic"),
+  });
+  await page.getByRole("button", { name: "Analisar e limpar" }).click();
+  await expect(pending).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Cadastrar 27 funcionários" }),
+  ).toBeEnabled();
+  await expect(pending).toHaveAttribute("aria-pressed", "false");
+  await expect(
+    page.getByRole("button", { name: "Mostrar todos", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("dialog").getByText("Página 1 de 2"),
+  ).toBeVisible();
+});
+
+test("login converte CPF para identidade interna sem chamar API real", async ({
+  page,
+}) => {
+  let submitted: { email: string; password: string } | undefined;
+  await page.route("**/auth/v1/**", (route) => {
+    if (route.request().method() === "POST")
+      submitted = route.request().postDataJSON();
+    return route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "invalid_grant",
+        error_description: "Invalid login credentials",
+      }),
+    });
+  });
+  await page.goto("/");
+  await page.getByLabel("CPF ou e-mail").fill("01234567890");
+  await page
+    .getByLabel("Senha", { exact: true })
+    .fill("Synthetic-only-Password-123!");
+  await page.getByRole("button", { name: "Entrar na plataforma" }).click();
+  await expect(
+    page
+      .getByRole("alert")
+      .getByText("CPF, e-mail ou senha inválidos. Confira e tente novamente."),
+  ).toBeVisible();
+  expect(submitted?.email).toBe("01234567890@cifraengenharia.com.br");
+});
+test("usuário tem navegação própria e layout móvel sem overflow", async ({
   page,
 }) => {
   await fixture(page);
@@ -724,7 +1466,7 @@ test("gerente tem navegação própria e layout móvel sem overflow", async ({
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Abrir menu" }).click();
   await expect(
-    page.getByRole("link", { name: "Gerentes", exact: true }),
+    page.getByRole("link", { name: "Usuários", exact: true }),
   ).toHaveCount(0);
   await page
     .getByRole("link", { name: "Meus treinamentos", exact: true })
@@ -738,7 +1480,7 @@ test("gerente tem navegação própria e layout móvel sem overflow", async ({
     ),
   ).toBe(true);
   await page.screenshot({ path: "test-results/mobile.png", fullPage: true });
-  await page.goto("/gerentes");
+  await page.goto("/usuarios");
   await expect(
     page.getByRole("heading", { name: "Meus treinamentos" }),
   ).toBeVisible();
@@ -750,18 +1492,18 @@ test("erro de carregamento mostra toast acessível e mantém aviso na página", 
   await page.route("**/api/admin/users", (route) =>
     route.fulfill({
       status: 500,
-      json: { error: "Não foi possível carregar os gerentes." },
+      json: { error: "Não foi possível carregar os usuários." },
     }),
   );
-  await page.goto("/gerentes");
+  await page.goto("/usuarios");
   await expect(page.getByRole("alert")).toContainText(
-    "Não foi possível carregar os gerentes.",
+    "Não foi possível carregar os usuários.",
   );
   await expect(page.locator(".toast-error")).toBeVisible();
   await page.getByRole("button", { name: "Fechar notificação" }).click();
   await expect(page.locator(".system-toast")).toHaveCount(0);
   await expect(page.locator(".error")).toContainText(
-    "Não foi possível carregar os gerentes.",
+    "Não foi possível carregar os usuários.",
   );
 });
 test("login e recuperação apresentam mensagem genérica", async ({ page }) => {
@@ -774,12 +1516,12 @@ test("login e recuperação apresentam mensagem genérica", async ({ page }) => 
   ).toBeVisible();
   await page.screenshot({ path: "test-results/login.png", fullPage: true });
   await page.getByRole("button", { name: "Esqueci minha senha" }).click();
-  await page.getByLabel("E-mail corporativo").fill("unknown@example.test");
+  await page.getByLabel("CPF ou e-mail").fill("unknown@example.test");
   await page.getByRole("button", { name: "Enviar instruções" }).click();
   await expect(page.getByText(/Se o e-mail estiver cadastrado/)).toBeVisible();
 });
 
-test("filtro de relatórios não lista gerentes excluídos", async ({ page }) => {
+test("filtro de relatórios não lista usuários excluídos", async ({ page }) => {
   await fixture(page, "admin");
   const deleted = {
     ...manager,
@@ -792,15 +1534,176 @@ test("filtro de relatórios não lista gerentes excluídos", async ({ page }) =>
     route.fulfill({ json: profiles }),
   );
   await page.goto("/relatorios");
-  const filter = page.getByRole("combobox", { name: "Gerente", exact: true });
+  const filter = page.getByRole("combobox", { name: "Usuário", exact: true });
   await expect(
     page.getByRole("button", { name: "Limpar dados" }),
   ).toBeEnabled();
-  await expect(filter.locator("option")).toHaveText(["Todos os gerentes"]);
+  await expect(filter.locator("option")).toHaveText(["Todos os usuários"]);
   profiles = [admin, { ...manager, active: false }];
   await page.reload();
   await expect(filter.locator("option")).toHaveText([
-    "Todos os gerentes",
+    "Todos os usuários",
     manager.name,
   ]);
+});
+
+test("conta suprema promove com confirmação e preserva telas administrativas", async ({
+  page,
+}) => {
+  await fixture(page, "admin", false, true);
+  await page.goto("/usuarios");
+  await expect(page.getByText("Conta suprema", { exact: true })).toBeVisible();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "Ana Souza" })
+    .getByRole("button", { name: "Ver mais" })
+    .click();
+  await page
+    .getByRole("button", { name: "Tornar administrador", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText("Ana Souza");
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "Ana Souza" })
+    .getByRole("button", { name: "Ver mais" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Tornar administrador", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Tornar administrador", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Confirmar promoção", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const row = page.getByRole("row").filter({ hasText: "Ana Souza" });
+  await expect(row).toContainText("Administrador");
+  await expect(row.getByRole("button")).toHaveText(["Ver mais"]);
+});
+
+test("admin comum não vê promoção nem outras contas administrativas", async ({
+  page,
+}) => {
+  await fixture(page, "admin");
+  await page.goto("/usuarios");
+  await expect(
+    page.getByRole("row").filter({ hasText: "Ana Souza" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("row").filter({ hasText: "Marina Lima" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Tornar administrador", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Cursos", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Cargos", exact: true }),
+  ).toBeVisible();
+});
+
+test("usuários: colunas resumidas e detalhes completos no modal", async ({
+  page,
+}) => {
+  const f = await fixture(page, "admin", false, true);
+  Object.assign(f.users[1], {
+    cpf: "01234567890",
+    state: "PE",
+    cost_center: "Recife",
+    job: { id: "job-test", name: "Analista" },
+  });
+  await page.goto("/usuarios");
+  await expect(page.getByRole("columnheader")).toHaveText([
+    "Participante",
+    "Cargo",
+    "CPF",
+    "Estado",
+    "Centro de custo",
+    "Acesso",
+    "Ações",
+  ]);
+  const row = page.getByRole("row").filter({ hasText: "Ana Souza" });
+  await expect(row.locator("td").first()).toHaveText("Ana Souza");
+  await expect(row.getByRole("button")).toHaveText([
+    "Gerar nova senha",
+    "Ver mais",
+  ]);
+  await expect(row.locator("button svg")).toHaveCount(2);
+  await row.getByRole("button", { name: "Ver mais" }).click();
+  const modal = page.getByRole("dialog");
+  await expect(
+    modal.getByRole("button", { name: "Tornar administrador", exact: true }),
+  ).toBeVisible();
+  for (const value of [
+    "Ana Souza",
+    "ana@example.test",
+    "Funcionário",
+    "Analista",
+    "01234567890",
+    "PE",
+    "Recife",
+    "Ativo",
+  ]) {
+    await expect(modal.getByText(value, { exact: true })).toBeVisible();
+  }
+  await expect(
+    modal.getByRole("button", { name: "Editar", exact: true }),
+  ).toBeVisible();
+  await expect(
+    modal.getByRole("button", { name: "Excluir Ana Souza", exact: true }),
+  ).toBeVisible();
+  await modal.getByRole("button", { name: "Fechar", exact: true }).click();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "Marina Lima" })
+    .getByRole("button", { name: "Ver mais" })
+    .click();
+  await expect(
+    modal.getByRole("button", { name: "Editar", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("promoção sem senha mantém ações alinhadas e explica bloqueio no tooltip", async ({
+  page,
+}) => {
+  const f = await fixture(page, "admin", false, true);
+  Object.assign(f.users[1], {
+    credential_pending: true,
+    cpf: "01234567890",
+    auth_user_id: null,
+  });
+  await page.goto("/usuarios");
+  await page
+    .getByRole("row")
+    .filter({ hasText: "Ana Souza" })
+    .getByRole("button", { name: "Ver mais" })
+    .click();
+  const modal = page.getByRole("dialog");
+  await expect(
+    modal.getByRole("button", { name: "Tornar administrador", exact: true }),
+  ).toBeVisible();
+  await expect(
+    modal.getByRole("button", { name: "Tornar administrador", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    modal.getByText("Gere a senha do usuário antes de torná-lo administrador."),
+  ).toBeHidden();
+  await modal.locator(".promotion-tooltip").hover();
+  await expect(modal.getByRole("tooltip")).toHaveText(
+    "Gere a senha do usuário antes de torná-lo administrador.",
+  );
+  await expect(modal.getByRole("tooltip")).toBeVisible();
+  await modal.getByRole("heading").hover();
+  await expect(modal.getByRole("tooltip")).toBeHidden();
+  await modal.locator(".promotion-tooltip").focus();
+  await expect(modal.getByRole("tooltip")).toBeVisible();
+  const buttons = modal.locator(".user-details-actions button");
+  await expect(buttons).toHaveCount(3);
+  const positions = await buttons.evaluateAll((elements) =>
+    elements.map((element) => element.getBoundingClientRect().top),
+  );
+  expect(Math.max(...positions) - Math.min(...positions)).toBeLessThan(2);
 });

@@ -16,26 +16,42 @@ import {
   Archive,
   Trash2,
   Check,
+  Eye,
+  KeyRound,
+  ShieldPlus,
 } from "lucide-react";
 import { api } from "./lib";
 import { useToast, useErrorState } from "./components/Toast";
 import {
   type Course,
+  type Assignment,
   type Profile,
   type Question,
   type Version,
+  type JobPosition,
 } from "./types";
 import { Button } from "./components/ui/button";
 import { Empty, ErrorNotice, Loading } from "./components/shared";
+import { EmployeeImport } from "./EmployeeImport";
+import {
+  assignmentOptions,
+  emptyAssignmentFilters,
+  filterAssignmentUsers,
+  toggleAssignmentUsers,
+} from "./assignmentFilters";
 
-function Modal({
+export function Modal({
   title,
   close,
   children,
+  wide = false,
+  className = "",
 }: {
   title: string;
   close: () => void;
   children: ReactNode;
+  wide?: boolean;
+  className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -44,7 +60,7 @@ function Modal({
   return (
     <dialog
       ref={ref}
-      className="modal"
+      className={`${wide ? "modal modal-wide" : "modal"} ${className}`}
       onCancel={(event) => {
         // O cancel do seletor de arquivos também propaga até o dialog.
         if (event.target !== event.currentTarget) return;
@@ -62,14 +78,20 @@ function Modal({
     </dialog>
   );
 }
-export function UsersPage() {
+export function UsersPage({ supreme = false }: { supreme?: boolean }) {
   const notify = useToast();
   const [users, setUsers] = useState<Profile[] | null>(null);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [details, setDetails] = useState<Profile | null>(null);
   const [edit, setEdit] = useState<Profile | "new" | null>(null);
   const [removing, setRemoving] = useState<Profile | null>(null);
+  const [promoting, setPromoting] = useState<Profile | null>(null);
   const [error, setError] = useErrorState();
   const [busy, setBusy] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [passwordTarget, setPasswordTarget] = useState<Profile | null>(null);
+  const [generatedPassword, setGeneratedPassword] = useState("");
   const reload = () => api<Profile[]>("/admin/users").then(setUsers);
   useEffect(() => {
     void reload().catch((e) => setError(e.message));
@@ -84,7 +106,10 @@ export function UsersPage() {
         await api("/admin/users", "POST", {
           name: f.get("name"),
           email: f.get("email"),
-          password: f.get("password"),
+          cpf: f.get("cpf"),
+          state: f.get("state"),
+          cost_center: f.get("cost_center"),
+          job_name: f.get("job_name"),
         });
       else if (edit)
         await api(`/admin/users/${edit.id}`, "PATCH", {
@@ -95,8 +120,8 @@ export function UsersPage() {
       setEdit(null);
       notify(
         edit === "new"
-          ? "Gerente cadastrado com sucesso."
-          : "Gerente atualizado com sucesso.",
+          ? "Usuário cadastrado com sucesso."
+          : "Usuário atualizado com sucesso.",
       );
     } catch (e) {
       setError((e as Error).message);
@@ -115,7 +140,7 @@ export function UsersPage() {
       );
       setRemoving(null);
       notify(
-        "Gerente excluído. O e-mail foi liberado e o histórico preservado.",
+        "Usuário excluído. O e-mail foi liberado e o histórico preservado.",
       );
     } catch (e) {
       setError((e as Error).message);
@@ -125,38 +150,93 @@ export function UsersPage() {
       setBusy(false);
     }
   }
+  async function generatePassword() {
+    if (!passwordTarget || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<{ password: string }>(
+        `/admin/users/${passwordTarget.id}/password`,
+        "POST",
+        { reset: !passwordTarget.credential_pending },
+      );
+      setGeneratedPassword(result.password);
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+      // Auth may have committed before the response was lost. Reveal the reset action.
+      await reload().catch(() => undefined);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function promote() {
+    if (!promoting || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/admin/users/${promoting.id}/promote`, "POST");
+      await reload();
+      setPromoting(null);
+      notify("Usuário promovido a administrador.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   const visible = users?.filter(
     (u) =>
-      u.role === "manager" &&
+      (supreme || u.role === "manager") &&
       (!u.deleted_at || Boolean(u.auth_user_id)) &&
-      `${u.name} ${u.email}`.toLowerCase().includes(search.toLowerCase()),
+      `${u.name} ${u.email} ${u.cpf ?? ""}`
+        .toLowerCase()
+        .includes(search.toLowerCase()),
   );
+  const pageSize = 20;
+  const totalPages = Math.max(1, Math.ceil((visible?.length ?? 0) / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageUsers = visible?.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPages));
+  }, [totalPages]);
   return (
     <>
       <div className="page-heading">
         <div>
           <span className="eyebrow">PESSOAS QUE EVOLUEM</span>
-          <h1>Gerentes</h1>
+          <h1>Usuários</h1>
           <p>Gerencie participantes e controle o acesso à plataforma.</p>
         </div>
-        <Button
-          onClick={() => {
-            setError("");
-            setEdit("new");
-          }}
-        >
-          <Plus size={17} /> Cadastrar gerente
-        </Button>
+        <div className="form-actions">
+          <Button variant="outline" onClick={() => setImporting(true)}>
+            <FileUp size={17} /> Importar base
+          </Button>
+          <Button
+            onClick={() => {
+              setError("");
+              setEdit("new");
+            }}
+          >
+            <Plus size={17} /> Cadastrar usuário
+          </Button>
+        </div>
       </div>
-      {!edit && !removing && <ErrorNotice message={error} />}
+      {!edit && !removing && !promoting && <ErrorNotice message={error} />}
       <div className="filters">
         <label className="search-field">
           <Search size={18} />
           <input
-            aria-label="Buscar gerente"
-            placeholder="Buscar por nome ou e-mail..."
+            aria-label="Buscar usuário"
+            placeholder="Buscar por nome, e-mail ou CPF..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
           />
         </label>
       </div>
@@ -169,18 +249,30 @@ export function UsersPage() {
               <thead>
                 <tr>
                   <th>Participante</th>
-                  <th>E-mail</th>
+                  <th>Cargo</th>
+                  <th>CPF</th>
+                  <th>Estado</th>
+                  <th>Centro de custo</th>
                   <th>Acesso</th>
                   <th>Ações</th>
                 </tr>
               </thead>
               <tbody>
-                {visible?.map((u) => (
+                {pageUsers?.map((u) => (
                   <tr key={u.id}>
                     <td>
                       <strong>{u.name || "Cadastro pendente"}</strong>
                     </td>
-                    <td>{u.email}</td>
+                    <td>
+                      {u.is_supreme
+                        ? "Supremo"
+                        : u.role === "admin"
+                          ? "Administrador"
+                          : "Funcionário"}
+                    </td>
+                    <td>{u.cpf || "—"}</td>
+                    <td>{u.state || "—"}</td>
+                    <td>{u.cost_center || "—"}</td>
                     <td>
                       <span
                         className={`badge ${u.active ? "completed" : "not_started"}`}
@@ -188,36 +280,41 @@ export function UsersPage() {
                         <i />
                         {u.deleted_at
                           ? "Exclusão pendente"
-                          : u.active
-                            ? "Ativo"
-                            : "Desativado"}
+                          : !u.active
+                            ? "Desativado"
+                            : u.credential_pending
+                              ? "Sem senha"
+                              : "Ativo"}
                       </span>
                     </td>
                     <td>
-                      {!u.deleted_at && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setError("");
-                            setEdit(u);
-                          }}
-                        >
-                          <Pencil size={15} /> Editar
-                        </Button>
+                      {u.role === "manager" && (
+                        <>
+                          {u.cpf && u.active && !u.deleted_at && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={busy}
+                              onClick={() => {
+                                setError("");
+                                setGeneratedPassword("");
+                                setPasswordTarget(u);
+                              }}
+                            >
+                              <KeyRound size={15} />
+                              {u.credential_pending
+                                ? "Gerar senha"
+                                : "Gerar nova senha"}
+                            </Button>
+                          )}
+                        </>
                       )}
                       <Button
                         variant="ghost"
                         size="sm"
-                        aria-label={`Excluir ${u.name || u.email}`}
-                        className="hover:text-red-400"
-                        onClick={() => {
-                          setError("");
-                          setRemoving(u);
-                        }}
+                        onClick={() => setDetails(u)}
                       >
-                        <Trash2 size={15} />{" "}
-                        {u.deleted_at ? "Concluir exclusão" : "Excluir"}
+                        <Eye size={15} /> Ver mais
                       </Button>
                     </td>
                   </tr>
@@ -225,16 +322,226 @@ export function UsersPage() {
               </tbody>
             </table>
             {!visible?.length && (
-              <Empty title="Nenhum gerente encontrado">
+              <Empty title="Nenhum usuário encontrado">
                 Cadastre o primeiro participante ou ajuste a busca.
               </Empty>
             )}
           </div>
         )}
       </section>
+      {users && Boolean(visible?.length) && (
+        <nav className="users-pagination" aria-label="Paginação de usuários">
+          <span className="muted">
+            {visible?.length} usuários · 20 por página
+          </span>
+          <div className="users-pagination-controls">
+            <Button
+              variant="outline"
+              disabled={currentPage === 1}
+              onClick={() => setPage(currentPage - 1)}
+            >
+              Anterior
+            </Button>
+            <span aria-live="polite">
+              Página {currentPage} de {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              disabled={currentPage === totalPages}
+              onClick={() => setPage(currentPage + 1)}
+            >
+              Próxima
+            </Button>
+          </div>
+        </nav>
+      )}
+      {details && (
+        <Modal title="Detalhes do usuário" close={() => setDetails(null)}>
+          <dl className="user-details">
+            {[
+              ["Participante", details.name || "Cadastro pendente"],
+              ["E-mail", details.email || "—"],
+              [
+                "Cargo",
+                details.is_supreme
+                  ? "Supremo"
+                  : details.role === "admin"
+                    ? "Administrador"
+                    : "Funcionário",
+              ],
+              ["Cargo cadastrado", details.job?.name ?? "Sem cargo"],
+              ["Função", details.professional_function || "Sem função"],
+              ["CPF", details.cpf || "—"],
+              ["Estado", details.state || "—"],
+              ["Centro de custo", details.cost_center || "—"],
+              [
+                "Acesso",
+                details.deleted_at
+                  ? "Exclusão pendente"
+                  : !details.active
+                    ? "Desativado"
+                    : details.credential_pending
+                      ? "Sem senha"
+                      : "Ativo",
+              ],
+            ].map(([label, value]) => (
+              <div key={label}>
+                <dt className="muted">{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+          {details.role === "manager" && (
+            <div className="form-actions user-details-actions">
+              {supreme && details.active && !details.deleted_at && (
+                <span
+                  className="promotion-tooltip"
+                  tabIndex={details.credential_pending ? 0 : undefined}
+                  aria-label={
+                    details.credential_pending
+                      ? "Tornar administrador indisponível"
+                      : undefined
+                  }
+                  aria-describedby={
+                    details.credential_pending ? "promotion-reason" : undefined
+                  }
+                >
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy || details.credential_pending}
+                    onClick={() => {
+                      setError("");
+                      setPromoting(details);
+                      setDetails(null);
+                    }}
+                  >
+                    <ShieldPlus size={15} /> Tornar administrador
+                  </Button>
+                  {details.credential_pending && (
+                    <span id="promotion-reason" role="tooltip">
+                      Gere a senha do usuário antes de torná-lo administrador.
+                    </span>
+                  )}
+                </span>
+              )}
+              {!details.deleted_at && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setError("");
+                    setEdit(details);
+                    setDetails(null);
+                  }}
+                >
+                  <Pencil size={15} /> Editar
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label={`Excluir ${details.name || details.email}`}
+                onClick={() => {
+                  setError("");
+                  setRemoving(details);
+                  setDetails(null);
+                }}
+              >
+                <Trash2 size={15} />
+                {details.deleted_at ? "Concluir exclusão" : "Excluir"}
+              </Button>
+            </div>
+          )}
+        </Modal>
+      )}
+      {importing && (
+        <EmployeeImport close={() => setImporting(false)} reload={reload} />
+      )}
+      {passwordTarget && (
+        <Modal
+          title="Gerar senha"
+          close={() => {
+            if (!busy) {
+              setPasswordTarget(null);
+              setGeneratedPassword("");
+            }
+          }}
+        >
+          <p>
+            Funcionário: <strong>{passwordTarget.name}</strong> · CPF:{" "}
+            {passwordTarget.cpf}
+          </p>
+          {generatedPassword ? (
+            <>
+              <p>
+                Senha gerada. Ela só será exibida neste modal; entregue ao
+                funcionário por um canal seguro.
+              </p>
+              <label>
+                Senha gerada
+                <input readOnly value={generatedPassword} autoComplete="off" />
+              </label>
+              <p>Para entrar, use o CPF sem pontuação e esta senha.</p>
+            </>
+          ) : (
+            <p>
+              {passwordTarget.credential_pending
+                ? "Gerar a senha inicial e liberar o acesso deste funcionário?"
+                : "Gerar uma nova senha? A senha anterior deixará de funcionar. Confirme apenas se deseja redefinir o acesso."}
+            </p>
+          )}
+          <ErrorNotice message={error} />
+          <div className="form-actions">
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                setPasswordTarget(null);
+                setGeneratedPassword("");
+              }}
+            >
+              Fechar
+            </Button>
+            {!generatedPassword && (
+              <Button disabled={busy} onClick={() => void generatePassword()}>
+                {busy ? "Gerando..." : "Confirmar geração"}
+              </Button>
+            )}
+          </div>
+        </Modal>
+      )}
+      {promoting && (
+        <Modal
+          title="Tornar administrador"
+          close={() => {
+            if (!busy) setPromoting(null);
+          }}
+        >
+          <p>
+            Promover <strong>{promoting.name || promoting.email}</strong>? A
+            conta terá acesso às telas administrativas, mas não poderá
+            visualizar outras contas administrativas nem promover usuários. O
+            histórico de treinamentos será preservado.
+          </p>
+          <ErrorNotice message={error} />
+          <div className="form-actions">
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => setPromoting(null)}
+            >
+              Cancelar
+            </Button>
+            <Button disabled={busy} onClick={() => void promote()}>
+              {busy ? "Promovendo..." : "Confirmar promoção"}
+            </Button>
+          </div>
+        </Modal>
+      )}
       {removing && (
         <Modal
-          title="Excluir gerente"
+          title="Excluir usuário"
           close={() => {
             if (!busy) setRemoving(null);
           }}
@@ -244,7 +551,7 @@ export function UsersPage() {
           </p>
           <p>
             A conta de login será apagada do Supabase Auth, liberando o e-mail
-            para um novo cadastro. O gerente perderá o acesso. Seu histórico de
+            para um novo cadastro. O usuário perderá o acesso. Seu histórico de
             treinamentos será preservado nos relatórios; um novo cadastro com o
             mesmo e-mail não herdará esse histórico.
           </p>
@@ -269,7 +576,7 @@ export function UsersPage() {
       )}
       {edit && (
         <Modal
-          title={edit === "new" ? "Cadastrar gerente" : "Editar gerente"}
+          title={edit === "new" ? "Cadastrar usuário" : "Editar usuário"}
           close={() => {
             if (!busy) setEdit(null);
           }}
@@ -289,23 +596,36 @@ export function UsersPage() {
               <>
                 <label>
                   E-mail corporativo
-                  <input name="email" type="email" required />
+                  <input name="email" type="email" />
+                  <small>Opcional. Usado apenas como contato.</small>
                 </label>
                 <label>
-                  Senha inicial
+                  CPF
                   <input
-                    name="password"
-                    type="password"
-                    autoComplete="new-password"
-                    minLength={12}
-                    maxLength={128}
+                    name="cpf"
                     required
+                    inputMode="numeric"
+                    pattern="[0-9]{11}"
+                    maxLength={11}
+                    placeholder="11 dígitos, sem pontuação"
                   />
-                  <small>
-                    Use pelo menos 12 caracteres e entregue por um canal seguro.
-                    O gerente pode redefini-la na tela de acesso.
-                  </small>
                 </label>
+                <label>
+                  Estado (UF)
+                  <input name="state" maxLength={2} />
+                </label>
+                <label>
+                  Centro de custo
+                  <input name="cost_center" maxLength={160} />
+                </label>
+                <label>
+                  Função profissional
+                  <input name="job_name" maxLength={120} />
+                </label>
+                <p>
+                  O cargo de acesso será Funcionário. A senha poderá ser gerada
+                  depois, na coluna Ações.
+                </p>
               </>
             ) : (
               <>
@@ -338,7 +658,7 @@ export function UsersPage() {
                 Cancelar
               </Button>
               <Button disabled={busy}>
-                {busy ? "Salvando..." : "Salvar gerente"}
+                {busy ? "Salvando..." : "Salvar usuário"}
               </Button>
             </div>
           </form>
@@ -349,6 +669,10 @@ export function UsersPage() {
 }
 
 export function Courses() {
+  const [assignmentFilters, setAssignmentFilters] = useState(
+    emptyAssignmentFilters,
+  );
+  const [assignmentJobs, setAssignmentJobs] = useState<JobPosition[]>([]);
   const notify = useToast();
   const [removing, setRemoving] = useState<Course | null>(null);
   const [deleteAssignments, setDeleteAssignments] = useState(false);
@@ -362,6 +686,7 @@ export function Courses() {
     version?: Version;
   } | null>(null);
   const [assign, setAssign] = useState<Version | null>(null);
+  const [assigned, setAssigned] = useState<string[] | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const reload = () => api<Course[]>("/courses").then(setCourses);
@@ -409,7 +734,34 @@ export function Courses() {
       setBusy(false);
     }
   }
+  async function openAssignment(version: Version) {
+    setAssignmentFilters(emptyAssignmentFilters);
+    setAssign(version);
+    setSelected([]);
+    setAssigned(null);
+    setError("");
+    setBusy(true);
+    try {
+      const [assignments, profiles, jobs] = await Promise.all([
+        api<Assignment[]>("/assignments"),
+        api<Profile[]>("/admin/users"),
+        api<JobPosition[]>("/admin/jobs"),
+      ]);
+      setUsers(profiles);
+      setAssignmentJobs(jobs);
+      setAssigned(
+        assignments
+          .filter((a) => a.version_id === version.id)
+          .map((a) => a.manager_id),
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function assignManagers() {
+    if (!assign || assigned === null || busy || !selected.length) return;
     setBusy(true);
     setError("");
     try {
@@ -424,6 +776,14 @@ export function Courses() {
       setBusy(false);
     }
   }
+  const assignmentUsers =
+    assigned === null ? [] : filterAssignmentUsers(users, assignmentFilters);
+  const selectableUsers = assignmentUsers.filter(
+    (user) => !assigned?.includes(user.id),
+  );
+  const allVisibleSelected =
+    selectableUsers.length > 0 &&
+    selectableUsers.every((user) => selected.includes(user.id));
   const visible = courses?.filter(
     (c) =>
       (!filter || c.status === filter) &&
@@ -522,11 +882,7 @@ export function Courses() {
                     {published && c.status === "published" && (
                       <Button
                         size="sm"
-                        onClick={() => {
-                          setError("");
-                          setAssign(published);
-                          setSelected([]);
-                        }}
+                        onClick={() => void openAssignment(published)}
                       >
                         <Users size={14} /> Atribuir
                       </Button>
@@ -603,7 +959,7 @@ export function Courses() {
             />
             <span>
               Apagar também as atribuições deste curso. Ele sumirá dos
-              treinamentos e do histórico dos gerentes. Progresso, respostas e
+              treinamentos e do histórico dos usuários. Progresso, respostas e
               conclusões serão apagados definitivamente.
             </span>
           </label>
@@ -646,46 +1002,178 @@ export function Courses() {
       {assign && (
         <Modal
           title={`Atribuir: ${assign.title}`}
+          className="assignment-modal"
           close={() => {
             if (!busy) setAssign(null);
           }}
         >
-          <p className="muted">
-            Versão {assign.version}. Atribuições existentes desta versão não
-            serão duplicadas.
-          </p>
+          <div className="assignment-filters">
+            <label className="assignment-filter-full">
+              Pesquisar nome
+              <input
+                value={assignmentFilters.name}
+                disabled={assigned === null || busy}
+                placeholder="Digite o nome"
+                onChange={(e) =>
+                  setAssignmentFilters((current) => ({
+                    ...current,
+                    name: e.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Estado
+              <select
+                value={assignmentFilters.state}
+                disabled={assigned === null || busy}
+                onChange={(e) =>
+                  setAssignmentFilters((current) => ({
+                    ...current,
+                    state: e.target.value,
+                  }))
+                }
+              >
+                <option value="">Todos os estados</option>
+                <option value="__missing__">Sem estado</option>
+                {assignmentOptions(users, "state").map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Cargo
+              <select
+                value={assignmentFilters.job}
+                disabled={assigned === null || busy}
+                onChange={(e) =>
+                  setAssignmentFilters((current) => ({
+                    ...current,
+                    job: e.target.value,
+                  }))
+                }
+              >
+                <option value="">Todos os cargos</option>
+                {[...assignmentJobs]
+                  .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+                  .map((job) => (
+                    <option key={job.id} value={job.id}>
+                      {job.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              Função
+              <select
+                value={assignmentFilters.professionalFunction}
+                disabled={assigned === null || busy}
+                onChange={(e) =>
+                  setAssignmentFilters((current) => ({
+                    ...current,
+                    professionalFunction: e.target.value,
+                  }))
+                }
+              >
+                <option value="">Todas as funções</option>
+                <option value="__missing__">Sem função</option>
+                {assignmentOptions(users, "professional_function").map(
+                  (option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
+            <label className="assignment-filter-full">
+              Centro de custo
+              <select
+                value={assignmentFilters.costCenter}
+                disabled={assigned === null || busy}
+                onChange={(e) =>
+                  setAssignmentFilters((current) => ({
+                    ...current,
+                    costCenter: e.target.value,
+                  }))
+                }
+              >
+                <option value="">Todos os centros de custo</option>
+                <option value="__missing__">Sem centro de custo</option>
+                {assignmentOptions(users, "cost_center").map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="assignment-filter-actions">
+            <Button
+              disabled={assigned === null || busy || !selectableUsers.length}
+              onClick={() => {
+                if (assigned !== null)
+                  setSelected((current) =>
+                    toggleAssignmentUsers(current, assignmentUsers, assigned),
+                  );
+              }}
+            >
+              {allVisibleSelected ? "Desmarcar tudo" : "Marcar tudo"}
+            </Button>
+            <Button
+              disabled={assigned === null || busy}
+              onClick={() => setAssignmentFilters(emptyAssignmentFilters)}
+            >
+              Limpar filtros
+            </Button>
+            {assigned !== null && (
+              <p className="muted" aria-live="polite">
+                {assignmentUsers.length} usuário(s) encontrado(s).
+              </p>
+            )}
+          </div>
           <div className="manager-picker">
-            {users
-              .filter((u) => u.role === "manager" && u.active)
-              .map((u) => (
-                <label className="check-label" key={u.id}>
-                  <input
-                    type="checkbox"
-                    checked={selected.includes(u.id)}
-                    onChange={(e) =>
-                      setSelected(
-                        e.target.checked
-                          ? [...selected, u.id]
-                          : selected.filter((id) => id !== u.id),
-                      )
-                    }
-                  />
-                  <span>
-                    <strong>{u.name}</strong>
-                    <small>{u.email}</small>
-                  </span>
-                </label>
-              ))}
+            {assigned === null && busy && <Loading />}
+            {assigned !== null && !assignmentUsers.length && (
+              <p>Nenhum usuário encontrado com esses filtros.</p>
+            )}
+            {assignmentUsers.map((u) => (
+              <label className="check-label" key={u.id}>
+                <input
+                  type="checkbox"
+                  checked={assigned?.includes(u.id) || selected.includes(u.id)}
+                  disabled={busy || assigned?.includes(u.id)}
+                  onChange={(e) =>
+                    setSelected(
+                      e.target.checked
+                        ? [...selected, u.id]
+                        : selected.filter((id) => id !== u.id),
+                    )
+                  }
+                />
+                <span>
+                  <strong>{u.name}</strong>
+                  {assigned?.includes(u.id) && <small>Já atribuído</small>}
+                </span>
+              </label>
+            ))}
           </div>
           <ErrorNotice message={error} />
           <div className="form-actions">
+            {assigned === null && !busy && (
+              <Button onClick={() => void openAssignment(assign)}>
+                Tentar novamente
+              </Button>
+            )}
             <Button
-              disabled={busy || !selected.length}
+              disabled={busy || assigned === null || !selected.length}
               onClick={() => void assignManagers()}
             >
-              {busy
+              {busy && assigned !== null
                 ? "Atribuindo..."
-                : `Atribuir a ${selected.length} gerente(s)`}
+                : `Atribuir a ${selected.length} usuário(s)`}
             </Button>
           </div>
         </Modal>
