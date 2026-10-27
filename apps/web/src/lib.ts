@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+const apiBase = `${(import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "")}/api`;
 const url = import.meta.env.VITE_SUPABASE_URL;
 const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 export const configured = Boolean(url && key && !key.startsWith("replace-"));
@@ -15,7 +16,7 @@ export async function api<T>(
   };
   if (body && !(body instanceof FormData))
     headers["Content-Type"] = "application/json";
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(`${apiBase}${path}`, {
     method,
     headers,
     body:
@@ -33,7 +34,7 @@ export async function api<T>(
 export async function exportCsv(query: string) {
   const session = await supabase?.auth.getSession();
   const response = await fetch(
-    `/api/admin/reports?${query}${query ? "&" : ""}format=csv`,
+    `${apiBase}/admin/reports?${query}${query ? "&" : ""}format=csv`,
     {
       headers: {
         Authorization: `Bearer ${session?.data.session?.access_token}`,
@@ -50,7 +51,7 @@ export async function exportCsv(query: string) {
 }
 export async function apiBlob(path: string, method = "GET", body?: FormData) {
   const session = await supabase?.auth.getSession();
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(`${apiBase}${path}`, {
     method,
     body,
     headers: {

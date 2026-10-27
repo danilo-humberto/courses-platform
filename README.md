@@ -107,6 +107,8 @@ As capturas e rastros de falhas ficam em `test-results/`, ignorado pelo Git. O b
 
 ## Build e hospedagem
 
+Para hospedar o frontend no Cloudflare Pages separado da API, configure `VITE_API_URL=https://cifra-academy-api.onrender.com` no ambiente de build, sem `/api`. Sem essa variável (ou com valor vazio), o frontend usa `/api` na própria origem, preservando o proxy de desenvolvimento. A configuração vale para chamadas JSON, PDFs e exportação CSV. Mudanças em variáveis `VITE_*` exigem um novo build. Configure também `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`; nunca exponha a chave secret no frontend. No Render, `WEB_ORIGIN` deve corresponder à URL HTTPS definitiva do Pages, sem barra final.
+
 `npm run build` produz `dist/web` e `dist/api`. `npm start` inicia somente o Express, em loopback por padrão (`HOST=127.0.0.1`). No Render, configure `HOST=0.0.0.0` e utilize a variável `PORT` fornecida pela plataforma. O endpoint de health é `GET /api/health`. A hospedagem precisa servir o frontend com fallback para `index.html`, encaminhar `/api` ao Express e configurar TLS, origem e URLs do Auth. O worker de PDF é um arquivo estático do build. Nenhuma infraestrutura ou deploy foi criado.
 
 O MVP mantém consultas administrativas em memória; é adequado a equipes pequenas. O backend pagina as listas de usuários, cursos e atribuições para não truncar silenciosamente no limite padrão do Supabase. Em escala maior, relatórios devem migrar para agregações e exportação por lotes. PDFs substituídos de rascunhos não são apagados automaticamente: a limpeza de arquivos órfãos exige manutenção controlada, sem tocar em arquivos referenciados por versões publicadas.
