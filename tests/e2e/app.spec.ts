@@ -1,5 +1,7 @@
+import { readFile } from "node:fs/promises";
 import { test, expect, type Page } from "@playwright/test";
 import { PDFDocument, StandardFonts } from "pdf-lib";
+import { renderCertificate } from "../../apps/api/src/certificates";
 import type {
   Assignment,
   Course,
@@ -157,7 +159,7 @@ async function fixture(
   await page.route("**/synthetic.pdf", (r) =>
     r.fulfill({ contentType: "application/pdf", body: pdfBytes }),
   );
-  await page.route("**/api/**", async (route) => {
+  await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
     const req = route.request();
     const url = new URL(req.url());
     const path = url.pathname.replace("/api", "");
@@ -170,6 +172,7 @@ async function fixture(
       });
     if (path === "/me") return ok(profile);
     if (path === "/courses") return ok(courses);
+    if (path === "/certificates") return ok([]);
     if (path === "/admin/users" && method === "GET") return ok(users);
     if (path === "/admin/jobs" && method === "GET") return ok([]);
     if (path.endsWith("/promote") && method === "POST") {
@@ -1706,4 +1709,253 @@ test("promoção sem senha mantém ações alinhadas e explica bloqueio no toolt
     elements.map((element) => element.getBoundingClientRect().top),
   );
   expect(Math.max(...positions) - Math.min(...positions)).toBeLessThan(2);
+});
+
+test("certificado: configura campos, confere prévia e publica", async ({
+  page,
+}) => {
+  const f = await fixture(page, "admin");
+  const source = await readFile("assets/certificado-modelo.pdf");
+  const config = {
+    hours: "4 horas",
+    fields: [
+      {
+        key: "nome" as const,
+        x: 0.1,
+        y: 0.45,
+        width: 0.8,
+        size: 28,
+        color: "#152D40",
+        align: "center" as const,
+      },
+    ],
+  };
+  let saved = false;
+  await page.route("**/api/admin/certificates/preview", async (route) => {
+    const request = route.request();
+    const form = await new Response(new Uint8Array(request.postDataBuffer()!), {
+      headers: { "content-type": request.headers()["content-type"] },
+    }).formData();
+    const selected = JSON.parse(String(form.get("config")));
+    await route.fulfill({ contentType: "application/pdf", body: Buffer.from(
+      await renderCertificate(source, selected, {
+        nome: "Maria Exemplo da Silva", cpf: "00000000000",
+        curso: "Introdução à Segurança no Trabalho", carga_horaria: selected.hours,
+        data_conclusao: "27/10/2026", codigo_certificado: "00000000-0000-4000-8000-000000000000",
+      }),
+    ) });
+  });
+  await page.route("**/api/admin/versions/*/certificate", async (route) => {
+    saved = true;
+    expect(route.request().postDataBuffer()?.toString()).toContain(
+      '"key":"nome"',
+    );
+    expect(route.request().postDataBuffer()?.toString()).not.toContain('"key":"cpf"');
+    expect(route.request().postDataBuffer()?.toString()).not.toContain('filename=');
+    await route.fulfill({ json: config });
+  });
+  await page.goto("/cursos");
+  await page.getByRole("button", { name: "Criar curso", exact: true }).click();
+  await page.getByLabel("Título do curso").fill("Curso com certificado");
+  await page.getByLabel("Apresentação PDF", { exact: true }).setInputFiles({
+    name: "curso.pdf",
+    mimeType: "application/pdf",
+    buffer: f.pdfBytes,
+  });
+  await page
+    .getByRole("checkbox", { name: "Gerar certificado ao concluir?" })
+    .check();
+  await expect(page.getByRole("dialog", { name: "Prévia do certificado", exact: true })).toHaveCount(0);
+  const openPreview = page.getByRole("button", { name: "Abrir prévia do certificado", exact: true });
+  const sizes = await openPreview.evaluate((button) => ({ button: button.getBoundingClientRect().width, parent: button.parentElement!.clientWidth }));
+  expect(sizes.parent - sizes.button).toBeLessThan(36);
+  await openPreview.click();
+  await expect(page.locator(".certificate-canvas canvas")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Nome do participante (obrigatório)", exact: true })).toBeDisabled();
+  await page.getByRole("checkbox", { name: "CPF", exact: true }).uncheck();
+  await expect(page.getByRole("button", { name: "Baixar prévia" })).toBeEnabled();
+  await expect(page.getByText("Prévia com dados fictícios.", { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: "test-results/certificate-editor.png",
+    fullPage: true,
+  });
+  await page
+    .getByRole("button", { name: "Voltar ao curso", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Publicar curso" }).click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  expect(saved).toBe(true);
+});
+
+test("certificado: conclusão libera download e histórico preserva emissão", async ({
+  page,
+}) => {
+  const f = await fixture(page);
+  f.assignment.version.certificate = {
+    path: "example.pdf",
+    hours: "4 horas",
+    fields: [
+      {
+        key: "nome",
+        x: 0.1,
+        y: 0.5,
+        width: 0.8,
+        size: 24,
+        color: "#152D40",
+        align: "center",
+      },
+    ],
+  };
+  const record = {
+    id: "60000000-0000-4000-8000-000000000001",
+    assignment_id: f.assignment.id,
+    course_title: f.assignment.version.title,
+    completed_at: "2026-10-27T12:00:00Z",
+  };
+  await page.route("**/api/certificates", (route) =>
+    route.fulfill({ json: f.assignment.completion ? [record] : [] }),
+  );
+  await page.route("**/api/certificates/*/pdf", (route) =>
+    route.fulfill({ contentType: "application/pdf", body: f.pdfBytes }),
+  );
+  await page.goto(`/treinamento/${f.assignment.id}`);
+  await expect(
+    page.getByText("Progresso salvo", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Baixar certificado" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Próximo" }).click();
+  await expect(page.getByText("2 de 2 slides visualizados")).toBeVisible();
+  await page.getByRole("button", { name: "Confirmar conclusão" }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Baixar certificado" }).click();
+  expect((await download).suggestedFilename()).toBe("certificado.pdf");
+  await page.route("**/api/assignments", (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await page.goto("/historico");
+  await expect(
+    page.getByRole("button", { name: "Baixar certificado" }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: "test-results/certificate-history.png",
+    fullPage: true,
+  });
+});
+
+test("certificado: falha na prévia permite tentar novamente ou desativar", async ({
+  page,
+}) => {
+  const f = await fixture(page, "admin");
+  f.courses[0].status = "draft";
+  f.courses[0].versions[0].published_at = null;
+  f.courses[0].versions[0].certificate = {
+    path: "missing.pdf",
+    hours: "4 horas",
+    fields: [
+      {
+        key: "nome",
+        x: 0.1,
+        y: 0.5,
+        width: 0.8,
+        size: 24,
+        color: "#152D40",
+        align: "center",
+      },
+    ],
+  };
+  await page.route("**/api/admin/certificates/preview", (r) =>
+    r.fulfill({
+      status: 503,
+      json: { error: "Modelo temporariamente indisponível." },
+    }),
+  );
+  await page.route("**/api/admin/versions/*/questions", (r) =>
+    r.fulfill({ json: [] }),
+  );
+  await page.goto("/cursos");
+  await page.getByRole("button", { name: "Editar", exact: true }).click();
+  const toggle = page.getByRole("checkbox", {
+    name: "Gerar certificado ao concluir?",
+  });
+  await expect(toggle).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Abrir prévia do certificado", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Tentar novamente" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Baixar prévia" })).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Voltar ao curso", exact: true })
+    .click();
+  await toggle.uncheck();
+  await expect(
+    page.getByRole("button", { name: "Salvar rascunho" }),
+  ).toBeEnabled();
+});
+
+test("certificado: abre modal separado e preserva o formulário ao voltar", async ({
+  page,
+}) => {
+  const f = await fixture(page, "admin");
+  await page.goto("/cursos");
+  await page.getByRole("button", { name: "Criar curso", exact: true }).click();
+  await page.getByLabel("Título do curso").fill("Curso preservado");
+  await page
+    .getByLabel("Descrição", { exact: true })
+    .fill("Descrição preservada");
+  await page.getByLabel("Apresentação PDF", { exact: true }).setInputFiles({
+    name: "curso.pdf",
+    mimeType: "application/pdf",
+    buffer: f.pdfBytes,
+  });
+  await page
+    .getByRole("checkbox", { name: "Gerar certificado ao concluir?" })
+    .check();
+  await page.getByRole("button", { name: "Abrir prévia do certificado", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Prévia do certificado", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Prévia do certificado", exact: true })
+      .getByRole("button", { name: "Publicar curso" }),
+  ).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("dialog", { name: "Prévia do certificado", exact: true })
+      .getByRole("button", { name: "Fechar", exact: true }),
+  ).toBeFocused();
+  await page.getByLabel("Carga horária do curso", { exact: true }).fill("8 horas");
+  await page.keyboard.press("Escape");
+  await expect(page.getByLabel("Título do curso")).toHaveValue(
+    "Curso preservado",
+  );
+  await expect(
+    page.getByRole("textbox", { name: "Descrição", exact: true }),
+  ).toHaveValue("Descrição preservada");
+  await expect(
+    page.getByLabel("Apresentação PDF", { exact: true }),
+  ).toHaveValue(/curso\.pdf$/);
+  await expect(page.getByLabel("Carga horária do curso", { exact: true })).toHaveCount(
+    0,
+  );
+  await page
+    .getByRole("button", { name: "Abrir prévia do certificado", exact: true })
+    .click();
+  await expect(page.getByLabel("Carga horária do curso", { exact: true })).toHaveValue(
+    "8 horas",
+  );
+  await page
+    .getByRole("button", { name: "Voltar ao curso", exact: true })
+    .click();
+  await page
+    .getByRole("checkbox", { name: "Gerar certificado ao concluir?" })
+    .uncheck();
+  await expect(
+    page.getByRole("button", { name: "Abrir prévia do certificado", exact: true }),
+  ).toHaveCount(0);
+  expect(f.getPostCount()).toBe(0);
 });

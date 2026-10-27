@@ -52,6 +52,10 @@ try {
     await client.query(readFileSync(`supabase/migrations/${file}`, "utf8"));
   }
   await client.query(readFileSync("supabase/tests/invariants.sql", "utf8"));
+  await client.query(readFileSync("supabase/tests/certificates.sql", "utf8"));
+  console.log(
+    "PASS: certificate completion, idempotency, snapshots, ownership, inactive users and retention",
+  );
   await client.query(
     readFileSync("supabase/tests/employee_import.sql", "utf8"),
   );

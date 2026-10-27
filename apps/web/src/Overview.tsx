@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { api, exportCsv } from "./lib";
+import { Certificates } from "./Certificates";
 import {
   type Assignment,
   type Course,
@@ -424,6 +425,7 @@ export function MyCourses({ history = false }: { history?: boolean }) {
           Tente outro filtro ou aguarde uma nova atribuição.
         </Empty>
       )}
+      {history && <Certificates />}
     </>
   );
 }

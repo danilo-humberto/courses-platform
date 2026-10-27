@@ -90,6 +90,7 @@ Após aplicação autorizada da migração `202610230004_delete_course_assignmen
 4. Marcar “Apagar também as atribuições” e confirmar: deve remover curso e todo o progresso/histórico associado. Atualizar a tela do usuário e os relatórios: o curso deve desaparecer. Outros cursos devem permanecer.
 
 Os testes `supabase/tests/delete_course.sql` e `supabase/tests/delete_course_assignments.sql` usam banco descartável, incluindo falha simulada ao registrar auditoria para verificar rollback integral. `scripts/test-db.mjs` também verifica a exclusão concorrente com atualização de progresso. Os testes de navegador usam respostas simuladas. PDFs de cursos excluídos permanecem no Storage para limpeza controlada posterior; cópias já baixadas não são revogadas.
+
 # Limpeza global dos relatórios
 
 Em ambiente descartável com dados sintéticos e a migração `202610230006_clear_reports.sql` aplicada:
@@ -100,12 +101,12 @@ Em ambiente descartável com dados sintéticos e a migração `202610230006_clea
 
 Cobertura automatizada: `npm test`, `npm run test:e2e -- --grep "limpeza global|dashboard administrativo"` e `npm run test:db` (PostgreSQL Docker descartável, sem leitura de `.env`). O teste de banco verifica autorização, confirmação, exclusão, preservação do catálogo, rollback se a auditoria falhar e espera por progresso em andamento.
 
-
 ### Validação da conta suprema
 
 Testes automatizados usam somente identidades sintéticas e PostgreSQL descartável: `npm test`, `npm run test:db` e `npx playwright test -g "conta suprema|admin comum"`. Cobrem recusa para usuário/admin comum, promoção pela suprema, exclusividade, RLS, auditoria, relatório JSON/CSV com perfil oculto e confirmação na interface.
 
 Após aplicação autorizada da migration em desenvolvimento:
+
 1. Entrar novamente como GTI: conferir “Conta suprema” e a ação “Tornar administrador” em um participante sintético ativo. Cancelar deve preservar o papel; confirmar deve mostrar “Administrador”.
 2. Entrar como o admin promovido: conferir os módulos administrativos, ausência do botão de promoção e das outras contas administrativas em Usuários.
 3. Promover um participante sintético com histórico: conferir que relatórios/CSV continuam funcionando para outro admin e que o histórico permanece disponível para GTI.
@@ -126,3 +127,28 @@ Verificações automatizadas: testes de filtros/seleção e importação; typech
 
 Executados npm test (80 testes aprovados), npm run build (aprovado, aviso de bundle acima de 500 kB), npm run lint e npm run test:db (PostgreSQL descartável; todas as verificações aprovadas). A primeira execução E2E terminou com 32 aprovados e 3 falhas de atribuição: a fixture não respondia ao novo GET /admin/jobs. Adicionada resposta sintética vazia, preservando todas as asserções, e reexecutados os três casos afetados.
 Resultado da reexecução: 3/3 aprovados; typecheck e lint também aprovados após a correção da fixture.
+
+# Validação de certificados opcionais
+
+A migration `202610270004_certificates.sql` foi aplicada em 27/10/2026 ao projeto de desenvolvimento `cifra courses`, após autorização explícita. A estrutura e as permissões foram conferidas por consultas somente leitura; a homologação integrada do fluxo abaixo permanece pendente. Não reaplique nesse projeto. Outros ambientes exigem autorização específica.
+
+1. Criar um curso e marcar “Gerar certificado ao concluir?”. Deve aparecer apenas o botão de largura total “Abrir prévia do certificado”, sem abrir o modal automaticamente. Abrir a prévia, desmarcar CPF e verificar que o texto e o rótulo desaparecem. Repetir com data, curso, carga horária e código; nome continua obrigatório. Ajustar a carga horária, baixar a prévia e conferir o modelo padrão sem rodapé de demonstração. Fechar com Esc e reabrir: escolhas, título, descrição e apresentação devem continuar preservados. Salvar/publicar pertence ao formulário do curso. Simular falha na prévia: mostrar erro e “Tentar novamente”, sem permitir baixar conteúdo desatualizado.
+2. Publicar e atribuir a um participante sintético. Antes da conclusão não deve haver certificado. Concluir por confirmação ou aprovação no questionário e baixar o PDF. CPF ausente deve omitir o rótulo; curso sem certificado deve manter o comportamento anterior.
+3. Alterar nome do participante após concluir e baixar novamente: arquivo e dados devem permanecer iguais. Outro participante e usuário inativo não podem acessar a emissão. Em ambiente descartável, excluir o curso ou limpar relatórios: a emissão continua em “Meu histórico”.
+
+Cobertura automatizada: `certificates.test.ts` (PDF/configuração), `certificates-api.test.ts` (API/Storage simulados), `supabase/tests/certificates.sql` (PostgreSQL descartável, autorização e preservação), cenários “certificado:” em `tests/e2e/app.spec.ts` (PDF.js real, API simulada). Os testes de navegador não substituem homologação de Storage/Auth reais.
+
+## Teste integrado isolado de certificado — 27/10/2026
+
+Executado `node --import tsx scripts/test-certificate-flow.mjs`: cria um PostgreSQL 17 descartável no Docker, confirma banco e papel da conexão, aplica as migrations e usa a API Express real com RPCs e RLS reais. Não lê `.env` nem conecta ao Supabase remoto. Auth é sintética e Storage fica em memória; portanto, não substitui homologação de Auth/Storage hospedados.
+
+Resultado: curso sintético criado, publicado e atribuído; conclusão bloqueada antes de visualizar os slides; conclusão repetida produz uma única emissão; participante baixa PDF com nome, curso, carga horária, data e código corretos, sem CPF desmarcado. Outro participante não lista nem baixa a emissão; usuário desativado recebe 403. Após alteração do nome e exclusão do curso, o histórico permanece e o download é idêntico byte a byte. O contêiner foi removido e sua ausência confirmada ao término.
+
+Evidências locais: `output/certificate-isolated-test/resultado.json`, `certificado-recebido.pdf` e renderização PNG na mesma pasta. O arquivo é sintético e não corresponde a uma emissão no Supabase atual.
+
+## Conferência antes do commit de certificados — 27/10/2026
+
+- `npm test`: 96 testes aprovados. `npm run build` e `npm run lint`: aprovados; permanece o aviso de bundle acima de 500 kB.
+- `npm run test:e2e`: 37/39 aprovados. Dois cenários (PDF e questionário) expiraram aguardando o worker PDF no servidor Vite de desenvolvimento; o trace mostra a requisição do worker sem resposta. Reexecutados no build de produção com `CIFRA_E2E_PREVIEW=1` e um worker: 2/2 aprovados. A instabilidade do ambiente de desenvolvimento não está considerada resolvida.
+- `npm run test:db`: a nova tentativa não executou as migrations/testes, pois o Docker retornou erro 500 ao criar o contêiner `cifra-test-33ee9813`. Não houve conexão com o Supabase atual. A evidência anterior do fluxo integrado isolado permanece válida, mas não equivale a uma aprovação desta nova tentativa.
+- Modelo final conferido visualmente: logo à esquerda do nome da empresa, bloco do treinamento elevado e assinatura somente com “Cifra Engenharia e Serviços LTDA”. PDF no índice Git comparado byte a byte com o arquivo local; atributo binário impede conversão de quebras de linha. Saídas geradas e rastros temporários ficam ignorados em `output/` e `tmp/`.

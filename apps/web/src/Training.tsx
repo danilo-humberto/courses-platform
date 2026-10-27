@@ -16,6 +16,7 @@ import {
 } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?worker&url";
 import { api } from "./lib";
+import { Certificates } from "./Certificates";
 import { useToast, useErrorState } from "./components/Toast";
 import { type Assignment, type Attempt, date } from "./types";
 import { Button } from "./components/ui/button";
@@ -285,6 +286,9 @@ export function Training() {
                 <div className="success">
                   <strong>Treinamento concluído!</strong>
                   <p>{date(data.completion.completed_at)}</p>
+                  {data.version.certificate && (
+                    <Certificates assignmentId={data.id} />
+                  )}
                 </div>
               ) : !data.version.quiz_enabled ? (
                 <Button

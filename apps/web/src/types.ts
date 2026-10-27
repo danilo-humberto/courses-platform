@@ -24,6 +24,11 @@ export type Question = {
   position?: number;
 };
 export type Version = {
+  certificate?:
+    | (import("../../api/src/certificates").CertificateConfig & {
+        path: string;
+      })
+    | null;
   id: string;
   course_id: string;
   version: number;

@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { defaultCertificate } from "./certificate-default.js";
 import express, {
   type Request,
   type Response,
@@ -13,6 +15,12 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { cleanEmployees, employeeSchema } from "./employees.js";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { csvCell, draftSchema, trainingStatus } from "./domain.js";
+import {
+  certificateSchema,
+  loadTemplate,
+  renderCertificate,
+  type CertificateValues,
+} from "./certificates.js";
 
 export type Config = {
   url: string;
@@ -136,6 +144,72 @@ export function createApp(
     next();
   });
   app.get("/api/me", (_req, res) => res.json(context(res).profile));
+  app.get("/api/certificates", async (_req, res) => {
+    res.json(
+      await collectPages((offset) =>
+        context(res)
+          .db.from("certificates")
+          .select("id,assignment_id,course_title,completed_at")
+          .order("completed_at", { ascending: false })
+          .order("id")
+          .range(offset, offset + 499),
+      ),
+    );
+  });
+  app.get("/api/certificates/:id/pdf", async (req, res) => {
+    const record = checked(
+      await context(res)
+        .db.from("certificates")
+        .select("*")
+        .eq("id", id(req))
+        .maybeSingle(),
+    );
+    if (!record) throw new HttpError(404, "Certificado não encontrado.");
+    const bucket = service.storage.from("certificate-pdfs");
+    const path = `issued/${record.id}.pdf`;
+    const existing = await bucket.download(path);
+    let bytes: Uint8Array;
+    if (existing.data)
+      bytes = new Uint8Array(await existing.data.arrayBuffer());
+    else {
+      const source = checked(await bucket.download(record.template.path));
+      if (!source)
+        throw new HttpError(503, "Modelo indisponível. Tente novamente.");
+      try {
+        bytes = await renderCertificate(
+          new Uint8Array(await source.arrayBuffer()),
+          certificateSchema.parse(record.template),
+          record.values,
+        );
+      } catch {
+        throw new HttpError(
+          422,
+          "Não foi possível gerar o certificado. Procure o administrador para conferir o modelo e os dados.",
+        );
+      }
+      const uploadResult = await bucket.upload(path, bytes, {
+        contentType: "application/pdf",
+        upsert: false,
+      });
+      // Concurrent requests must return the first persisted document, never overwrite it.
+      if (uploadResult.error) {
+        const winner = checked(await bucket.download(path));
+        if (!winner)
+          throw new HttpError(
+            503,
+            "Não foi possível guardar o certificado. Tente novamente.",
+          );
+        bytes = new Uint8Array(await winner.arrayBuffer());
+      }
+    }
+    res
+      .type("pdf")
+      .setHeader(
+        "Content-Disposition",
+        'attachment; filename="certificado.pdf"',
+      );
+    res.send(Buffer.from(bytes));
+  });
   app.get("/api/courses", async (_req, res) => {
     const { db } = context(res);
     res.json(
@@ -515,6 +589,132 @@ export function createApp(
     storage: multer.memoryStorage(),
     limits: { fileSize: 20 * 1024 * 1024, files: 1 },
   });
+  const certificateUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: 20 * 1024 * 1024,
+      files: 1,
+      fields: 2,
+      fieldSize: 32000,
+    },
+  });
+  const parseCertificate = (raw: unknown) => {
+    try {
+      const config = certificateSchema.parse(JSON.parse(String(raw)));
+      return {
+        hours: config.hours,
+        fields: defaultCertificate.fields.filter((field) =>
+          config.fields.some((selected) => selected.key === field.key),
+        ),
+      };
+    } catch {
+      throw new HttpError(
+        400,
+        "Configuração de certificado inválida. Confira os campos.",
+      );
+    }
+  };
+  app.post(
+    "/api/admin/certificates/preview",
+    certificateUpload.single("pdf"),
+    async (req, res) => {
+      const config = parseCertificate(req.body.config);
+      const values: CertificateValues = {
+        nome: "Maria Exemplo da Silva",
+        cpf: "00000000000",
+        curso: "Introdução à Segurança no Trabalho",
+        carga_horaria: config.hours,
+        data_conclusao: "27/10/2026",
+        codigo_certificado: "00000000-0000-4000-8000-000000000000",
+      };
+      try {
+        res
+          .type("pdf")
+          .send(
+            Buffer.from(
+              await renderCertificate(await readFile("assets/certificado-modelo.pdf"), config, values),
+            ),
+          );
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+    },
+  );
+  app.get("/api/admin/versions/:id/certificate-template", async (req, res) => {
+    const v = checked(
+      await context(res)
+        .db.from("course_versions")
+        .select("certificate")
+        .eq("id", id(req))
+        .maybeSingle(),
+    );
+    if (!v?.certificate) throw new HttpError(404, "Modelo não encontrado.");
+    const file = checked(
+      await service.storage
+        .from("certificate-pdfs")
+        .download(v.certificate.path),
+    );
+    if (!file) throw new HttpError(404, "Modelo não encontrado.");
+    res.type("pdf").send(Buffer.from(await file.arrayBuffer()));
+  });
+  app.put(
+    "/api/admin/versions/:id/certificate",
+    certificateUpload.single("pdf"),
+    async (req, res) => {
+      const vid = id(req);
+      const { db, profile } = context(res);
+      const v = checked(
+        await db
+          .from("course_versions")
+          .select("published_at,certificate,title")
+          .eq("id", vid)
+          .maybeSingle(),
+      );
+      if (!v || v.published_at)
+        throw new HttpError(400, "Configure o certificado em um rascunho.");
+      const enabled =
+        z.enum(["true", "false"]).parse(req.body.enabled) === "true";
+      let saved = null;
+      let newPath: string | null = null;
+      if (enabled) {
+        const config = parseCertificate(req.body.config);
+        const validationSource = await readFile("assets/certificado-modelo.pdf");
+        const bytes = await (await loadTemplate(validationSource)).save();
+        const path = `templates/${vid}/${randomUUID()}.pdf`;
+        checked(
+          await service.storage.from("certificate-pdfs").upload(path, bytes, {
+            contentType: "application/pdf",
+            upsert: false,
+          }),
+        );
+        newPath = path;
+        try {
+          await renderCertificate(validationSource, config, {
+            nome: "@".repeat(120),
+            cpf: "00000000000",
+            curso: v.title ?? "Curso",
+            carga_horaria: config.hours,
+            data_conclusao: "27/10/2026",
+            codigo_certificado: "00000000-0000-4000-8000-000000000000",
+          });
+        } catch (e) {
+          if (newPath)
+            await service.storage.from("certificate-pdfs").remove([newPath]);
+          throw new HttpError(400, (e as Error).message);
+        }
+        saved = { ...config, path };
+      }
+      const result = await service.rpc("set_draft_certificate", {
+        p_actor: profile.id,
+        p_version: vid,
+        p_config: saved,
+      });
+      if (result.error && newPath)
+        await service.storage.from("certificate-pdfs").remove([newPath]);
+      checked(result);
+      res.json(saved);
+    },
+  );
   app.post(
     "/api/admin/versions/:id/pdf",
     upload.single("pdf"),
@@ -565,6 +765,41 @@ export function createApp(
     },
   );
   app.post("/api/admin/versions/:id/publish", async (req, res) => {
+    const v = checked(
+      await context(res)
+        .db.from("course_versions")
+        .select("title,certificate")
+        .eq("id", id(req))
+        .maybeSingle(),
+    );
+    if (v?.certificate) {
+      const source = checked(
+        await service.storage
+          .from("certificate-pdfs")
+          .download(v.certificate.path),
+      );
+      if (!source)
+        throw new HttpError(
+          400,
+          "Modelo indisponível. Envie outro PDF antes de publicar.",
+        );
+      try {
+        await renderCertificate(
+          new Uint8Array(await source.arrayBuffer()),
+          certificateSchema.parse(v.certificate),
+          {
+            nome: "@".repeat(120),
+            cpf: "00000000000",
+            curso: v.title,
+            carga_horaria: v.certificate.hours,
+            data_conclusao: "27/10/2026",
+            codigo_certificado: "00000000-0000-4000-8000-000000000000",
+          },
+        );
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+    }
     checked(await context(res).db.rpc("admin_publish", { p_version: id(req) }));
     res.sendStatus(204);
   });

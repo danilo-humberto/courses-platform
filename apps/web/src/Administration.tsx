@@ -21,6 +21,11 @@ import {
   ShieldPlus,
 } from "lucide-react";
 import { api } from "./lib";
+import {
+  CertificateEditor,
+  defaultCertificate,
+  type CertificateDraft,
+} from "./CertificateEditor";
 import { useToast, useErrorState } from "./components/Toast";
 import {
   type Course,
@@ -60,6 +65,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
+      aria-label={title}
       className={`${wide ? "modal modal-wide" : "modal"} ${className}`}
       onCancel={(event) => {
         // O cancel do seletor de arquivos também propaga até o dialog.
@@ -1206,6 +1212,15 @@ function CourseEditor({
   // Retain the newly created course ID across upload/publish failures; retry cannot create duplicates.
   const courseId = useRef(initial.course?.id);
   const draftId = useRef(v && !v.published_at ? v.id : undefined);
+  const [certificate, setCertificate] = useState<CertificateDraft>({
+    enabled: !!v?.certificate,
+    config: {
+      hours: v?.certificate?.hours ?? defaultCertificate.hours,
+      fields: defaultCertificate.fields.filter((field) => !v?.certificate || v.certificate.fields.some((saved) => saved.key === field.key)),
+    },
+    dirty: !!v?.certificate,
+  });
+  const [certificateOpen, setCertificateOpen] = useState(false);
   useEffect(() => {
     if (v)
       void api<Question[]>(`/admin/versions/${v.id}/questions`)
@@ -1253,6 +1268,19 @@ function CourseEditor({
         await api(`/admin/versions/${result.version_id}/pdf`, "POST", form);
         setFile(null);
       }
+      if (certificate.dirty) {
+        const form = new FormData();
+        form.append("enabled", String(certificate.enabled));
+        if (certificate.enabled) {
+          form.append("config", JSON.stringify(certificate.config));
+        }
+        await api(
+          `/admin/versions/${result.version_id}/certificate`,
+          "PUT",
+          form,
+        );
+        setCertificate((current) => ({ ...current, dirty: false }));
+      }
       if (publish)
         await api(`/admin/versions/${result.version_id}/publish`, "POST");
       await saved();
@@ -1268,207 +1296,261 @@ function CourseEditor({
     }
   }
   return (
-    <Modal
-      title={
-        v?.published_at
-          ? "Criar nova versão"
-          : initial.course
-            ? "Editar rascunho"
-            : "Criar curso"
-      }
-      close={() => {
-        if (!busy) close();
-      }}
-    >
-      <form onSubmit={save}>
-        {v?.published_at && (
-          <div className="notice">
-            As conclusões e atribuições anteriores continuarão vinculadas à
-            versão {v.version}. Envie o PDF para a nova versão.
-          </div>
-        )}
-        <label>
-          Título do curso
-          <input
-            required
-            maxLength={150}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            autoFocus
-          />
-        </label>
-        <label>
-          Descrição
-          <textarea
-            rows={3}
-            maxLength={5000}
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="O que a equipe vai aprender?"
-          />
-        </label>
-        <label className="upload-field">
-          <FileUp size={25} />
-          <strong>
-            {file?.name ||
-              (!v?.published_at && v?.pdf_path
-                ? "Substituir apresentação PDF"
-                : "Selecionar apresentação PDF")}
-          </strong>
-          <span>Até 20 MB e 500 páginas · sem senha</span>
-          <input
-            aria-label="Apresentação PDF"
-            type="file"
-            accept="application/pdf,.pdf"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-          />
-        </label>
-        <label className="check-label">
-          <input
-            type="checkbox"
-            checked={quiz}
-            onChange={(e) => setQuiz(e.target.checked)}
-          />
-          <strong>Incluir questionário de avaliação</strong>
-        </label>
-        {quiz && (
-          <section className="quiz-editor">
-            <div className="form-grid">
-              <label>
-                Nota mínima (%)
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  required
-                  value={score}
-                  onChange={(e) => setScore(Number(e.target.value))}
-                />
-              </label>
-              <label>
-                Máximo de tentativas
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  required
-                  value={max}
-                  onChange={(e) => setMax(Number(e.target.value))}
-                />
-              </label>
+    <>
+      <Modal
+        title={
+          v?.published_at
+            ? "Criar nova versão"
+            : initial.course
+              ? "Editar rascunho"
+              : "Criar curso"
+        }
+        close={() => {
+          if (!busy) close();
+        }}
+      >
+        <form onSubmit={save}>
+          {v?.published_at && (
+            <div className="notice">
+              As conclusões e atribuições anteriores continuarão vinculadas à
+              versão {v.version}. Envie o PDF para a nova versão.
             </div>
-            {questions.map((q, i) => (
-              <div className="question-editor" key={i}>
-                <div className="flex items-center justify-between">
-                  <strong>Questão {i + 1}</strong>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Remover questão ${i + 1}`}
-                    onClick={() =>
-                      setQuestions(questions.filter((_, j) => j !== i))
-                    }
-                  >
-                    <Trash2 size={16} />
-                  </Button>
-                </div>
+          )}
+          <label>
+            Título do curso
+            <input
+              required
+              maxLength={150}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              autoFocus
+            />
+          </label>
+          <label>
+            Descrição
+            <textarea
+              rows={3}
+              maxLength={5000}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="O que a equipe vai aprender?"
+            />
+          </label>
+          <label className="upload-field">
+            <FileUp size={25} />
+            <strong>
+              {file?.name ||
+                (!v?.published_at && v?.pdf_path
+                  ? "Substituir apresentação PDF"
+                  : "Selecionar apresentação PDF")}
+            </strong>
+            <span>Até 20 MB e 500 páginas · sem senha</span>
+            <input
+              aria-label="Apresentação PDF"
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+            />
+          </label>
+          <fieldset
+            className="certificate-editor"
+            disabled={busy}
+          >
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={certificate.enabled}
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+                  setCertificate((current) => ({
+                    ...current,
+                    enabled,
+                    dirty: true,
+                  }));
+                }}
+              />
+              <strong>Gerar certificado ao concluir?</strong>
+            </label>
+            {certificate.enabled && (
+              <Button
+                type="button"
+                variant="outline"
+                className="certificate-preview-button"
+                onClick={() => setCertificateOpen(true)}
+              >
+                Abrir prévia do certificado
+              </Button>
+            )}
+          </fieldset>
+          <label className="check-label">
+            <input
+              type="checkbox"
+              checked={quiz}
+              onChange={(e) => setQuiz(e.target.checked)}
+            />
+            <strong>Incluir questionário de avaliação</strong>
+          </label>
+          {quiz && (
+            <section className="quiz-editor">
+              <div className="form-grid">
                 <label>
-                  Enunciado
+                  Nota mínima (%)
                   <input
+                    type="number"
+                    min={1}
+                    max={100}
                     required
-                    maxLength={2000}
-                    value={q.prompt}
-                    onChange={(e) =>
-                      updateQuestion(i, { prompt: e.target.value })
-                    }
+                    value={score}
+                    onChange={(e) => setScore(Number(e.target.value))}
                   />
                 </label>
-                <small>Marque a alternativa correta.</small>
-                {q.options.map((o, j) => (
-                  <div className="option-editor" key={j}>
+                <label>
+                  Máximo de tentativas
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    required
+                    value={max}
+                    onChange={(e) => setMax(Number(e.target.value))}
+                  />
+                </label>
+              </div>
+              {questions.map((q, i) => (
+                <div className="question-editor" key={i}>
+                  <div className="flex items-center justify-between">
+                    <strong>Questão {i + 1}</strong>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Remover questão ${i + 1}`}
+                      onClick={() =>
+                        setQuestions(questions.filter((_, j) => j !== i))
+                      }
+                    >
+                      <Trash2 size={16} />
+                    </Button>
+                  </div>
+                  <label>
+                    Enunciado
                     <input
-                      type="radio"
-                      aria-label={`Questão ${i + 1}, correta ${j + 1}`}
-                      name={`correct-${i}`}
-                      checked={q.correct_index === j}
-                      onChange={() => updateQuestion(i, { correct_index: j })}
-                    />
-                    <input
-                      aria-label={`Questão ${i + 1}, alternativa ${j + 1}`}
                       required
-                      maxLength={500}
-                      value={o}
+                      maxLength={2000}
+                      value={q.prompt}
                       onChange={(e) =>
-                        updateQuestion(i, {
-                          options: q.options.map((x, k) =>
-                            k === j ? e.target.value : x,
-                          ),
-                        })
+                        updateQuestion(i, { prompt: e.target.value })
                       }
                     />
-                    {q.options.length > 2 && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`Remover alternativa ${j + 1}`}
-                        onClick={() =>
+                  </label>
+                  <small>Marque a alternativa correta.</small>
+                  {q.options.map((o, j) => (
+                    <div className="option-editor" key={j}>
+                      <input
+                        type="radio"
+                        aria-label={`Questão ${i + 1}, correta ${j + 1}`}
+                        name={`correct-${i}`}
+                        checked={q.correct_index === j}
+                        onChange={() => updateQuestion(i, { correct_index: j })}
+                      />
+                      <input
+                        aria-label={`Questão ${i + 1}, alternativa ${j + 1}`}
+                        required
+                        maxLength={500}
+                        value={o}
+                        onChange={(e) =>
                           updateQuestion(i, {
-                            options: q.options.filter((_, k) => k !== j),
-                            correct_index: 0,
+                            options: q.options.map((x, k) =>
+                              k === j ? e.target.value : x,
+                            ),
                           })
                         }
-                      >
-                        <X size={15} />
-                      </Button>
-                    )}
-                  </div>
-                ))}
-                {q.options.length < 6 && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      updateQuestion(i, { options: [...q.options, ""] })
-                    }
-                  >
-                    + Alternativa
-                  </Button>
-                )}
-              </div>
-            ))}
+                      />
+                      {q.options.length > 2 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Remover alternativa ${j + 1}`}
+                          onClick={() =>
+                            updateQuestion(i, {
+                              options: q.options.filter((_, k) => k !== j),
+                              correct_index: 0,
+                            })
+                          }
+                        >
+                          <X size={15} />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                  {q.options.length < 6 && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        updateQuestion(i, { options: [...q.options, ""] })
+                      }
+                    >
+                      + Alternativa
+                    </Button>
+                  )}
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!ready || questions.length >= 50}
+                onClick={() =>
+                  setQuestions([
+                    ...questions,
+                    { prompt: "", options: ["", ""], correct_index: 0 },
+                  ])
+                }
+              >
+                <Plus size={16} /> Adicionar questão
+              </Button>
+            </section>
+          )}
+          <ErrorNotice message={error} />
+          <div className="form-actions">
             <Button
-              type="button"
+              type="submit"
+              value="draft"
               variant="outline"
-              disabled={!ready || questions.length >= 50}
-              onClick={() =>
-                setQuestions([
-                  ...questions,
-                  { prompt: "", options: ["", ""], correct_index: 0 },
-                ])
-              }
+              disabled={busy || !ready}
             >
-              <Plus size={16} /> Adicionar questão
+              {busy ? "Salvando..." : "Salvar rascunho"}
             </Button>
-          </section>
-        )}
-        <ErrorNotice message={error} />
-        <div className="form-actions">
-          <Button
-            type="submit"
-            value="draft"
-            variant="outline"
-            disabled={busy || !ready}
-          >
-            {busy ? "Salvando..." : "Salvar rascunho"}
-          </Button>
-          <Button type="submit" value="publish" disabled={busy || !ready}>
-            <Check size={16} /> Publicar curso
-          </Button>
-        </div>
-      </form>
-    </Modal>
+            <Button
+              type="submit"
+              value="publish"
+              disabled={busy || !ready}
+            >
+              <Check size={16} /> Publicar curso
+            </Button>
+          </div>
+        </form>
+      </Modal>
+      {certificateOpen && (
+        <Modal
+          title="Prévia do certificado"
+          wide
+          close={() => setCertificateOpen(false)}
+        >
+          <CertificateEditor
+            value={certificate}
+            onChange={setCertificate}
+            disabled={busy}
+          />
+          <div className="form-actions">
+            <Button type="button" onClick={() => setCertificateOpen(false)}>
+              Voltar ao curso
+            </Button>
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }

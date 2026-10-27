@@ -1950,3 +1950,70 @@ td .progress-row {
     transition: none !important;
   }
 }
+/* Certificate fields use normalized page coordinates, independent of preview size. */
+.certificate-editor {
+  border: 1px solid #d9e2e7;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 18px 0;
+  min-width: 0;
+}
+.certificate-canvas {
+  position: relative;
+  width: 100%;
+  margin: 16px 0;
+  overflow: hidden;
+  background: #f4f4f4;
+  cursor: crosshair;
+}
+.certificate-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.certificate-field {
+  position: absolute;
+  transform: translateY(-100%);
+  border: 1px dashed #607582;
+  background: #ffffffdc;
+  font-size: 10px;
+  padding: 2px;
+  line-height: 1.1;
+  cursor: pointer;
+}
+.certificate-field.selected {
+  outline: 2px solid #136b71;
+  background: #e5fbf5ee;
+}
+.certificate-issued {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+}
+.certificate-editor input[type="color"] {
+  height: 42px;
+  padding: 4px;
+}
+
+.certificate-preview-button {
+  width: 100%;
+  margin-top: 12px;
+}
+.certificate-options {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+.certificate-options legend {
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.certificate-options > label {
+  margin-top: 16px;
+}
+.certificate-preview {
+  cursor: default;
+}
